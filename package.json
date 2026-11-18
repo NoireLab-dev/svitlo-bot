@@ -1,0 +1,13 @@
+{
+  "name": "svitlo-bot",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node --env-file=.env monitor.mjs",
+    "test": "node monitor.mjs test"
+  },
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.55.0"
+  },
+  "private": true
+}

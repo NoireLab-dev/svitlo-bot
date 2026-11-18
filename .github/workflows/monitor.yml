@@ -1,0 +1,34 @@
+name: svitlo
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: svitlo
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Google Chrome вже стоїть на ubuntu-latest, браузер не качаємо
+      - run: node monitor.mjs
+        env:
+          TZ: Europe/Kyiv
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+      - name: save state
+        if: always()
+        run: |
+          git config user.name svitlo-bot
+          git config user.email svitlo-bot@users.noreply.github.com
+          git add state.bin
+          git diff --cached --quiet || (git commit -qm "state" && git push -q)
