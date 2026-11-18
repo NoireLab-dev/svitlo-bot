@@ -1,4 +1,4 @@
-// Бот графиків ДТЕК КРЕМ для одного будинку: картинка + живий підпис у закріпі, нагадування за 30 хв.
+// Бот графиків ДТЕК КРЕМ для одного будинку: картинка + живий підпис у закріпі, нагадування за 30 і 10 хв.
 // Сусіди підписуються на бота (/start). Запуск раз на 10 хв (GitHub Actions). Стан у state.bin.
 import { chromium } from "playwright"
 import fs from "node:fs"
@@ -10,7 +10,7 @@ const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
 const HOUSE = process.env.HOUSE || "10"
-const REMIND_MIN = 30
+const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
 const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
 
@@ -157,6 +157,22 @@ async function sendCard(chatId, sub, photo, caption, loud) {
   return true
 }
 
+// нагадування для 96 слотів (сьогодні + завтра): at = хвилина, коли слати; t = момент переходу
+export function reminders(all, nowMin, t0) {
+  const out = []
+  for (let j = 1; j < all.length; j++) {
+    const off = all[j] === "off"
+    if (off === (all[j - 1] === "off")) continue
+    const t = j * 30
+    if (t <= nowMin) continue
+    let e = j; while (off && e < all.length && all[e] === "off") e++
+    const ths = off ? [[30, true], [10, false]] : [[10, true]]
+    for (const [m, silent] of ths) out.push({ id: `${t0}:${j}:${m}`, at: t - m, t, end: e * 30, off, silent })
+  }
+  // 30-хвилинне не шлемо, якщо вже час 10-хвилинного
+  return out.filter((r) => !(r.silent && r.off && nowMin >= r.t - 10))
+}
+
 // ---------- головне ----------
 async function main() {
   const state = loadState()
@@ -180,9 +196,20 @@ async function main() {
   const browser = await chromium.launch({ headless: true, channel: process.env.CHROME_CHANNEL ?? "chrome" })
   try {
     const page = await browser.newPage()
-    const res = await fetchSchedule(page)
-    const f = res.fact
-    if (!f?.data) throw new Error("ДТЕК не віддав графік")
+    let res, f
+    try {
+      res = await fetchSchedule(page); f = res.fact
+      if (!f?.data) throw new Error("ДТЕК не віддав графік")
+    } catch (e) {
+      // власнику один раз, якщо ДТЕК мовчить понад 30 хв
+      if (OWNER && Date.now() - (state.lastOk ?? 0) > 30 * 60e3 && !state.staleWarned) {
+        await tg("sendMessage", { chat_id: OWNER, text: `⚠️ Бот не може взяти графік з ДТЕК понад 30 хв: ${e.message}` })
+        state.staleWarned = true
+      }
+      throw e
+    }
+    if (state.staleWarned && OWNER) await tg("sendMessage", { chat_id: OWNER, text: "✅ Графік з ДТЕК знову береться" })
+    state.lastOk = Date.now(); state.staleWarned = false
     const key = `GPV${GROUP}`
     const now = new Date()
     const mid = new Date(now); mid.setHours(0, 0, 0, 0)
@@ -228,7 +255,7 @@ async function main() {
     for (const [id, sub] of Object.entries(state.subs)) {
       let ok = true
       if (joined.includes(id)) {
-        await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за ${REMIND_MIN} хв.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
+        await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за 30 і 10 хв до вимкнення.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
         ok = await sendCard(id, sub, photo, body, false)
       } else if (newCard || !sub.msgId) ok = await sendCard(id, sub, photo, caption, !!state.head)
       else if (sub.caption !== caption) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML" }))?.gone
@@ -236,24 +263,24 @@ async function main() {
       sub.caption = joined.includes(id) ? body : caption
     }
 
-    // нагадування за 30 хв до вимкнення і увімкнення
+    // нагадування: за 30 хв до вимкнення тихо, за 10 хв зі звуком, за 10 хв до увімкнення тихо
+    state.sent ??= []
     const all = [...(today || []), ...(tomorrow || [])]
-    for (let j = 1; j < all.length; j++) {
-      const was = all[j - 1] === "off", is = all[j] === "off"
-      if (was === is) continue
-      const left = j * 30 - nowMin
-      const id = `${t0}:${j}`
-      if (left > 0 && left <= REMIND_MIN && state.reminded !== id) {
-        const text = is ? `⏰ О ${hm((j * 30) % 1440)} вимкнення світла (черга ${GROUP}). Заряджайте телефони 🔋`
-          : `⏰ О ${hm((j * 30) % 1440)} за графіком мають увімкнути світло 💡`
-        for (const [cid, sub] of Object.entries(state.subs)) {
-          if (sub.remindId) await tg("deleteMessage", { chat_id: cid, message_id: sub.remindId })
-          const r = await tg("sendMessage", { chat_id: cid, text })
-          if (r.gone) delete state.subs[cid]; else sub.remindId = r.message_id
-        }
-        state.reminded = id
-        break
+    const due = reminders(all, nowMin, t0).filter((r) => !state.sent.includes(r.id))
+    const wait = Math.min(...due.map((r) => r.at - nowMin).filter((d) => d > 0 && d <= 6))
+    if (isFinite(wait) && !DRY_RUN) await new Promise((ok) => setTimeout(ok, (wait * 60 - new Date().getSeconds()) * 1000))
+    const mNow = DRY_RUN ? nowMin : Math.max(nowMin, new Date().getHours() * 60 + new Date().getMinutes())
+    const r = due.filter((r) => r.at <= mNow).at(-1) // запізнились - шлемо тільки найсвіжіше
+    if (r) {
+      const left = r.t - mNow
+      const text = r.off ? `⏰ Через ${left} хв, о ${hm(r.t % 1440)}, вимкнення світла до ${hm(r.end % 1440)} (${dur(r.end - r.t)}). Заряджайте телефони 🔋`
+        : `💡 Через ${left} хв, о ${hm(r.t % 1440)}, за графіком мають увімкнути світло`
+      for (const [cid, sub] of Object.entries(state.subs)) {
+        if (sub.remindId) await tg("deleteMessage", { chat_id: cid, message_id: sub.remindId })
+        const m = await tg("sendMessage", { chat_id: cid, text, disable_notification: r.silent })
+        if (m.gone) delete state.subs[cid]; else sub.remindId = m.message_id
       }
+      state.sent = [...state.sent, ...due.filter((d) => d.at <= mNow).map((d) => d.id)].slice(-30)
     }
     console.log(body, `\nпідписників: ${Object.keys(state.subs).length}`)
   } finally {
@@ -268,5 +295,9 @@ if (process.argv[2] === "test") {
   assert.deepEqual(intervals(s), [{ start: 630, end: 720, kind: "off" }, { start: 1020, end: 1050, kind: "off" }, { start: 1380, end: 1440, kind: "maybe" }])
   assert.equal(nowLine(s, null, 640), "⚫️ <b>Зараз світла немає</b> · увімкнення о 12:00")
   assert.equal(nowLine(s, null, 100), "💡 <b>Зараз світло є</b> · вимкнення о 10:30")
+  const all = [...s, ...Array(48).fill("on")]
+  const rs = reminders(all, 600, 0)
+  assert.deepEqual(rs.map((r) => [r.at, r.t, r.end, r.off, r.silent]), [[600, 630, 720, true, true], [620, 630, 720, true, false], [710, 720, 720, false, true], [990, 1020, 1050, true, true], [1010, 1020, 1050, true, false], [1040, 1050, 1050, false, true]])
+  assert.equal(reminders(all, 625, 0)[0].at, 620) // о 10:25 вже лише 10-хвилинне
   console.log("ok")
 } else await main()
