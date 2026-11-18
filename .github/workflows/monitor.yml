@@ -25,6 +25,7 @@ jobs:
           TZ: Europe/Kyiv
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           STATE_KEY: ${{ secrets.STATE_KEY }}
+          TELEGRAM_CHAT_ID: "@fortunatraking"
       - name: save state
         if: always()
         run: |
