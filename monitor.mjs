@@ -7,7 +7,7 @@ import crypto from "node:crypto"
 const { TELEGRAM_BOT_TOKEN: TOKEN, TELEGRAM_CHAT_ID: CHAT, DRY_RUN, STATE_KEY } = process.env
 const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
-const GROUP = process.env.GROUP || "6.2"
+const GROUP = process.env.GROUP || "2.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
@@ -221,7 +221,7 @@ async function main() {
 
     const h = res.data?.[HOUSE] || {}
     const alert = h.sub_type ? `⚠️ <b>ДТЕК: ${h.sub_type}</b>${h.start_date ? ` з ${h.start_date}` : ""}${h.end_date ? ` до ${h.end_date}` : ""}` : ""
-    const sig = JSON.stringify([t0, today, tomorrow, alert])
+    const sig = JSON.stringify([t0, today, tomorrow, alert, GROUP])
     const body = [
       `⚡️ <b>${TITLE} · черга ${GROUP}</b>`, "",
       dayBlock("Сьогодні", dToday, today), "",
@@ -241,9 +241,10 @@ async function main() {
     }
     if (newCard) {
       // новий графік (зі звуком) або нова доба (тихо) -> нова картка всім
-      const [p0, pToday, pTom, pAlert] = state.sig ? JSON.parse(state.sig) : []
+      const [p0, pToday, pTom, pAlert, pGroup = "6.2"] = state.sig ? JSON.parse(state.sig) : []
       const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
-      state.head = p0 !== t0 ? ""
+      state.head = pGroup !== GROUP ? `🔁 <b>Уточнили чергу: наш будинок живе за чергою ${GROUP}</b>\n\n`
+        : p0 !== t0 ? ""
         : alert && alert !== pAlert ? "⚠️ <b>Увага, відключення!</b>\n\n"
         : !same(pToday, today) ? "🔄 <b>Графік на сьогодні змінився!</b>\n\n"
         : !pTom && tomorrow ? "📅 <b>З'явився графік на завтра</b>\n\n"
