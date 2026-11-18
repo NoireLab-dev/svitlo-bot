@@ -9,6 +9,7 @@ const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
+const HOUSE = process.env.HOUSE || "10"
 const REMIND_MIN = 30
 const STATE_FILE = "state.bin"
 const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
@@ -116,11 +117,11 @@ const GONE = /blocked|deactivated|chat not found|user is deactivated/
 async function tg(method, params, file) {
   if (DRY_RUN) { console.log("[dry]", method, params.chat_id ?? "", (params.caption || params.text || "").slice(0, 60)); return { message_id: 1 } }
   let body
-  if (file) {
+  if (file && typeof file !== "string") {
     body = new FormData()
     for (const [k, v] of Object.entries(params)) body.append(k, String(v))
     body.append("photo", new Blob([file], { type: "image/png" }), "grafik.png")
-  } else body = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))
+  } else body = new URLSearchParams(Object.entries(file ? { ...params, photo: file } : params).map(([k, v]) => [k, String(v)]))
   const r = await (await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, { method: "POST", body })).json()
   if (!r.ok && GONE.test(r.description)) return { gone: true }
   if (!r.ok && !/not modified|not found|can't be/.test(r.description)) throw new Error(`${method}: ${r.description}`)
@@ -146,9 +147,10 @@ function saveState(s) {
 }
 
 // надіслати картку одному підписнику і закріпити в його чаті
-async function sendCard(chatId, sub, png, caption, loud) {
-  const msg = await tg("sendPhoto", { chat_id: chatId, caption, parse_mode: "HTML", disable_notification: !loud }, png)
+async function sendCard(chatId, sub, photo, caption, loud) {
+  const msg = await tg("sendPhoto", { chat_id: chatId, caption, parse_mode: "HTML", disable_notification: !loud }, photo.id || photo.png)
   if (msg.gone) return false
+  photo.id ||= msg.photo?.at(-1)?.file_id
   if (sub.msgId) await tg("unpinChatMessage", { chat_id: chatId, message_id: sub.msgId })
   await tg("pinChatMessage", { chat_id: chatId, message_id: msg.message_id, disable_notification: true })
   sub.msgId = msg.message_id
@@ -182,34 +184,43 @@ async function main() {
     const f = res.fact
     if (!f?.data) throw new Error("ДТЕК не віддав графік")
     const key = `GPV${GROUP}`
-    const t0 = Number(f.today)
+    const now = new Date()
+    const mid = new Date(now); mid.setHours(0, 0, 0, 0)
+    const t0 = f.data[mid / 1000] ? mid / 1000 : Number(f.today)
     const today = toSlots(f.data[t0]?.[key])
     const tomorrow = toSlots(f.data[t0 + 86400]?.[key]) // shortcut: +86400 зсувається на годину в дні переходу на літній час, раз на рік
-    const now = new Date()
     const nowMin = now.getHours() * 60 + now.getMinutes()
     const dToday = new Date(t0 * 1000), dTom = new Date((t0 + 86400) * 1000)
 
-    const sig = JSON.stringify([t0, today, tomorrow])
+    const h = res.data?.[HOUSE] || {}
+    const alert = h.sub_type ? `⚠️ <b>ДТЕК: ${h.sub_type}</b>${h.start_date ? ` з ${h.start_date}` : ""}${h.end_date ? ` до ${h.end_date}` : ""}` : ""
+    const sig = JSON.stringify([t0, today, tomorrow, alert])
     const body = [
       `⚡️ <b>${TITLE} · черга ${GROUP}</b>`, "",
       dayBlock("Сьогодні", dToday, today), "",
       dayBlock("Завтра", dTom, tomorrow), "",
+      ...(alert ? [alert] : []),
       nowLine(today, tomorrow, nowMin),
       `<i>ДТЕК оновив ${f.update}</i>`,
     ].join("\n")
 
     const newCard = sig !== state.sig
-    let png
+    const photo = {}
     if (newCard || joined.length || Object.values(state.subs).some((s) => !s.msgId)) {
       await page.setViewportSize({ width: 1200, height: 600 })
       await page.setContent(cardHtml([{ name: "Сьогодні", date: dToday, slots: today }, { name: "Завтра", date: dTom, slots: tomorrow }], nowMin, f.update))
-      png = await (await page.$(".card")).screenshot()
-      fs.writeFileSync("grafik.png", png)
+      photo.png = await (await page.$(".card")).screenshot()
+      fs.writeFileSync("grafik.png", photo.png)
     }
     if (newCard) {
       // новий графік (зі звуком) або нова доба (тихо) -> нова картка всім
-      const changed = !!state.sig && JSON.parse(state.sig)[0] === t0
-      state.head = changed ? "🔄 <b>Графік змінився!</b>\n\n" : ""
+      const [p0, pToday, pTom, pAlert] = state.sig ? JSON.parse(state.sig) : []
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+      state.head = p0 !== t0 ? ""
+        : alert && alert !== pAlert ? "⚠️ <b>Увага, відключення!</b>\n\n"
+        : !same(pToday, today) ? "🔄 <b>Графік на сьогодні змінився!</b>\n\n"
+        : !pTom && tomorrow ? "📅 <b>З'явився графік на завтра</b>\n\n"
+        : !same(pTom, tomorrow) ? "🔄 <b>Графік на завтра змінився</b>\n\n" : ""
       state.sig = sig
     }
     const caption = state.head + body
@@ -218,8 +229,8 @@ async function main() {
       let ok = true
       if (joined.includes(id)) {
         await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за ${REMIND_MIN} хв.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
-        ok = await sendCard(id, sub, png, body, false)
-      } else if (newCard || !sub.msgId) ok = await sendCard(id, sub, png, caption, !!state.head)
+        ok = await sendCard(id, sub, photo, body, false)
+      } else if (newCard || !sub.msgId) ok = await sendCard(id, sub, photo, caption, !!state.head)
       else if (sub.caption !== caption) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML" }))?.gone
       if (!ok) { delete state.subs[id]; continue }
       sub.caption = joined.includes(id) ? body : caption
