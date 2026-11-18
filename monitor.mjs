@@ -200,7 +200,7 @@ async function main() {
 
     const newCard = sig !== state.sig
     let png
-    if (newCard || joined.length) {
+    if (newCard || joined.length || Object.values(state.subs).some((s) => !s.msgId)) {
       await page.setViewportSize({ width: 1200, height: 600 })
       await page.setContent(cardHtml([{ name: "Сьогодні", date: dToday, slots: today }, { name: "Завтра", date: dTom, slots: tomorrow }], nowMin, f.update))
       png = await (await page.$(".card")).screenshot()
