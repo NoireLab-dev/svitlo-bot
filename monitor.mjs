@@ -1,5 +1,6 @@
 // Бот графиків ДТЕК КРЕМ для одного будинку: картинка + живий підпис у закріпі, нагадування за 30 і 10 хв.
-// Сусіди підписуються на бота (/start). Запуск раз на 10 хв (GitHub Actions). Стан у state.bin.
+// Сусіди підписуються на бота (/start). Запуск раз на 5 хв (cron-job.org -> GitHub Actions). Стан у state.bin.
+// Збої Telegram і ДТЕК не валять запуск: повтори, а нагадування йдуть з останнього відомого графіка.
 import { chromium } from "playwright"
 import fs from "node:fs"
 import crypto from "node:crypto"
@@ -16,6 +17,9 @@ const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
 
 // ---------- дані ----------
 async function fetchSchedule(page) {
+  try { return await fetchOnce(page) } catch (e) { console.log("ДТЕК, повтор:", e.message); return fetchOnce(page) }
+}
+async function fetchOnce(page) {
   await page.goto("https://www.dtek-krem.com.ua/ua/shutdowns", { waitUntil: "load", timeout: 90000 })
   const csrf = await (await page.waitForSelector('meta[name="csrf-token"]', { state: "attached", timeout: 60000 })).getAttribute("content")
   return page.evaluate(async ({ csrf, CITY, STREET }) => {
@@ -122,7 +126,15 @@ async function tg(method, params, file) {
     for (const [k, v] of Object.entries(params)) body.append(k, String(v))
     body.append("photo", new Blob([file], { type: "image/png" }), "grafik.png")
   } else body = new URLSearchParams(Object.entries(file ? { ...params, photo: file } : params).map(([k, v]) => [k, String(v)]))
-  const r = await (await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, { method: "POST", body })).json()
+  let r
+  for (let i = 1; ; i++) {
+    // мережа, 5xx і 429 у Telegram бувають хвилинами: повторюємо, а не валимо весь запуск
+    try { r = await (await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, { method: "POST", body, signal: AbortSignal.timeout(30000) })).json() }
+    catch (e) { r = { ok: false, description: `network: ${e.message}` } }
+    const retry = !r.ok && (r.error_code >= 500 || r.error_code === 429 || /^network/.test(r.description))
+    if (!retry || i === 4) break
+    await new Promise((ok) => setTimeout(ok, (r.parameters?.retry_after ?? 2 ** i * 3) * 1000))
+  }
   if (!r.ok && GONE.test(r.description)) return { gone: true }
   if (!r.ok && !/not modified|not found|can't be/.test(r.description)) throw new Error(`${method}: ${r.description}`)
   return r.result
@@ -167,7 +179,7 @@ export function reminders(all, nowMin, t0) {
     if (t <= nowMin) continue
     let e = j; while (off && e < all.length && all[e] === "off") e++
     const ths = off ? [[30, true], [10, false]] : [[10, true]]
-    for (const [m, silent] of ths) out.push({ id: `${t0}:${j}:${m}`, at: t - m, t, end: e * 30, off, silent })
+    for (const [m, silent] of ths) out.push({ id: `${t0 + j * 1800}:${m}`, at: t - m, t, end: e * 30, off, silent })
   }
   // 30-хвилинне не шлемо, якщо вже час 10-хвилинного
   return out.filter((r) => !(r.silent && r.off && nowMin >= r.t - 10))
@@ -181,14 +193,16 @@ async function main() {
 
   // нові підписники: /start і /stop з моменту минулого запуску
   const joined = []
-  const ups = DRY_RUN ? [] : await tg("getUpdates", { offset: (state.offset ?? 0) + 1, allowed_updates: '["message","my_chat_member"]' })
+  let ups = []
+  try { if (!DRY_RUN) ups = await tg("getUpdates", { offset: (state.offset ?? 0) + 1, allowed_updates: '["message","my_chat_member"]' }) }
+  catch (e) { console.log("getUpdates пропущено:", e.message) } // нові /start заберемо наступного разу
   for (const u of ups || []) {
     state.offset = u.update_id
     const m = u.message, cm = u.my_chat_member
     if (m?.chat?.type === "private" && /^\/start/.test(m.text || "")) { if (!state.subs[m.chat.id]) { state.subs[m.chat.id] = {}; joined.push(String(m.chat.id)) } }
     if (m?.chat?.type === "private" && /^\/stop/.test(m.text || "")) {
       delete state.subs[m.chat.id]
-      await tg("sendMessage", { chat_id: m.chat.id, text: "Відписав. Щоб повернутись, натисніть /start" })
+      await tg("sendMessage", { chat_id: m.chat.id, text: "Відписав. Щоб повернутись, натисніть /start" }).catch((e) => console.log("stop:", e.message))
     }
     if (cm?.new_chat_member?.status === "kicked") delete state.subs[cm.chat.id]
   }
@@ -202,12 +216,23 @@ async function main() {
       if (!f?.data) throw new Error("ДТЕК не віддав графік")
     } catch (e) {
       // власнику один раз, якщо ДТЕК мовчить понад 30 хв
+      console.log("ДТЕК недоступний:", e.message)
       if (OWNER && Date.now() - (state.lastOk ?? 0) > 30 * 60e3 && !state.staleWarned) {
-        await tg("sendMessage", { chat_id: OWNER, text: `⚠️ Бот не може взяти графік з ДТЕК понад 30 хв: ${e.message}` })
+        await tg("sendMessage", { chat_id: OWNER, text: `⚠️ Бот не може взяти графік з ДТЕК понад 30 хв: ${e.message}\nНагадування йдуть за останнім відомим графіком.` })
         state.staleWarned = true
       }
-      throw e
     }
+    if (f) await publish(page, state, res, f, joined)
+    await remind(state)
+    console.log(`підписників: ${Object.keys(state.subs).length}`)
+  } finally {
+    saveState(state) // offset зберігаємо навіть при помилці ДТЕК, щоб не загубити /start
+    await browser.close()
+  }
+}
+
+// свіжий графік: картки всім, підпис із «зараз»
+async function publish(page, state, res, f, joined) {
     if (state.staleWarned && OWNER) await tg("sendMessage", { chat_id: OWNER, text: "✅ Графік з ДТЕК знову береться" })
     state.lastOk = Date.now(); state.staleWarned = false
     const key = `GPV${GROUP}`
@@ -232,8 +257,9 @@ async function main() {
     ].join("\n")
 
     const newCard = sig !== state.sig
+    const needCard = (id, sub) => newCard || joined.includes(id) || !sub.msgId || sub.retry
     const photo = {}
-    if (newCard || joined.length || Object.values(state.subs).some((s) => !s.msgId)) {
+    if (Object.entries(state.subs).some(([id, sub]) => needCard(id, sub))) {
       await page.setViewportSize({ width: 1200, height: 600 })
       await page.setContent(cardHtml([{ name: "Сьогодні", date: dToday, slots: today }, { name: "Завтра", date: dTom, slots: tomorrow }], nowMin, f.update))
       photo.png = await (await page.$(".card")).screenshot()
@@ -255,39 +281,52 @@ async function main() {
 
     for (const [id, sub] of Object.entries(state.subs)) {
       let ok = true
+      try {
       if (joined.includes(id)) {
         await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за 30 і 10 хв до вимкнення.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
         ok = await sendCard(id, sub, photo, body, false)
-      } else if (newCard || !sub.msgId) ok = await sendCard(id, sub, photo, caption, !!state.head)
+      } else if (needCard(id, sub)) ok = await sendCard(id, sub, photo, caption, !!state.head)
       else if (sub.caption !== caption) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML" }))?.gone
+      } catch (e) { console.log(`підписник ${id.slice(-4)}:`, e.message); sub.retry = true; continue } // дошлемо наступного запуску
       if (!ok) { delete state.subs[id]; continue }
+      delete sub.retry
       sub.caption = joined.includes(id) ? body : caption
     }
+    state.cache = { t0, today, tomorrow } // для нагадувань, якщо ДТЕК ляже
+    console.log(body)
+}
+
+// нагадування з останнього відомого графіка (працює й тоді, коли ДТЕК не відповідає)
+async function remind(state) {
+    const c = state.cache
+    if (!c) return
+    const now = new Date()
+    const mid = new Date(now); mid.setHours(0, 0, 0, 0)
+    const shift = Math.round((mid / 1000 - c.t0) / 60) // хвилин від початку збереженої доби до сьогоднішньої
+    const nowMin = now.getHours() * 60 + now.getMinutes() + shift
+    const t0 = c.t0
 
     // нагадування: за 30 хв до вимкнення тихо, за 10 хв зі звуком, за 10 хв до увімкнення тихо
     state.sent ??= []
-    const all = [...(today || []), ...(tomorrow || [])]
+    const all = [...(c.today || []), ...(c.tomorrow || [])]
     const due = reminders(all, nowMin, t0).filter((r) => !state.sent.includes(r.id))
     const wait = Math.min(...due.map((r) => r.at - nowMin).filter((d) => d > 0 && d <= 6))
     if (isFinite(wait) && !DRY_RUN) await new Promise((ok) => setTimeout(ok, (wait * 60 - new Date().getSeconds()) * 1000))
-    const mNow = DRY_RUN ? nowMin : Math.max(nowMin, new Date().getHours() * 60 + new Date().getMinutes())
+    const mNow = DRY_RUN ? nowMin : Math.max(nowMin, new Date().getHours() * 60 + new Date().getMinutes() + shift)
     const r = due.filter((r) => r.at <= mNow).at(-1) // запізнились - шлемо тільки найсвіжіше
     if (r) {
       const left = r.t - mNow
       const text = r.off ? `⏰ Через ${left} хв, о ${hm(r.t % 1440)}, вимкнення світла до ${hm(r.end % 1440)} (${dur(r.end - r.t)}). Заряджайте телефони 🔋`
         : `💡 Через ${left} хв, о ${hm(r.t % 1440)}, за графіком мають увімкнути світло`
       for (const [cid, sub] of Object.entries(state.subs)) {
-        if (sub.remindId) await tg("deleteMessage", { chat_id: cid, message_id: sub.remindId })
-        const m = await tg("sendMessage", { chat_id: cid, text, disable_notification: r.silent })
-        if (m.gone) delete state.subs[cid]; else sub.remindId = m.message_id
+        try {
+          if (sub.remindId) await tg("deleteMessage", { chat_id: cid, message_id: sub.remindId })
+          const m = await tg("sendMessage", { chat_id: cid, text, disable_notification: r.silent })
+          if (m.gone) delete state.subs[cid]; else sub.remindId = m.message_id
+        } catch (e) { console.log(`нагадування ${cid.slice(-4)}:`, e.message) }
       }
       state.sent = [...state.sent, ...due.filter((d) => d.at <= mNow).map((d) => d.id)].slice(-30)
     }
-    console.log(body, `\nпідписників: ${Object.keys(state.subs).length}`)
-  } finally {
-    saveState(state) // offset зберігаємо навіть при помилці ДТЕК, щоб не загубити /start
-    await browser.close()
-  }
 }
 
 if (process.argv[2] === "test") {
