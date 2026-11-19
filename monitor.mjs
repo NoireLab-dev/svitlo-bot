@@ -10,6 +10,7 @@ const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
+const CARD_V = 2 // зміна дизайну картки -> тихо надіслати нову всім
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
@@ -82,37 +83,47 @@ function nowLine(today, tomorrow, nowMin) {
 }
 
 // ---------- картинка ----------
-function cardHtml(rows, nowMin, updated) {
-  const row = ({ name, date, slots }, isToday) => {
-    const cells = slots
-      ? slots.map((v) => `<i class="${v}"></i>`).join("")
-      : `<div class="none">графіка ще немає</div>`
-    const now = isToday ? `<b class="now" style="left:calc(${(nowMin / 1440) * 100}% - 1px)"></b>` : ""
-    return `<div class="row"><div class="lbl"><div>${name}</div><span>${dayLabel(date)}</span></div><div class="bar">${cells}${now}</div></div>`
+// суцільні відрізки однакового стану: [{kind, start, end}] у слотах по 30 хв
+const runs = (slots) => slots.reduce((o, v, i) => (o.at(-1)?.kind === v ? o.at(-1).end++ : o.push({ kind: v, start: i, end: i + 1 }), o), [])
+
+// без «зараз»: картинка перемальовується лише при зміні графіка, живий стан - у підписі
+function cardHtml(rows, updated) {
+  const grid = Array.from({ length: 9 }, (_, k) => `<span style="left:${(k / 8) * 100}%">${String(k * 3).padStart(2, "0")}</span>`).join("")
+  const row = ({ name, date, slots }) => {
+    let bar = `<div class="none">графіка ще немає</div>`
+    if (slots) {
+      bar = runs(slots).map(({ kind, start, end }) => {
+        const n = end - start
+        const txt = kind === "on" ? (n >= 5 ? "є світло" : "") : n >= 4 ? `${hm(start * 30)}<br>${hm(end * 30)}` : ""
+        return `<div class="seg ${kind}" style="flex:${n}">${txt}</div>`
+      }).join("")
+    }
+    const all = slots ? intervals(slots) : []
+    const iv = all.filter((x) => x.kind === "off")
+    const list = all.map((x) => `<span class="${x.kind}t">${hm(x.start)}–${hm(x.end)}${x.kind === "maybe" ? " можливо" : ""}</span>`).join("")
+    const sum = !slots ? "" : iv.length ? `без світла ${dur(iv.reduce((a, x) => a + x.end - x.start, 0))}` : "без відключень"
+    return `<div class="row"><div class="lbl"><div>${name}</div><span>${dayLabel(date)}</span><em class="${iv.length ? "red" : ""}">${sum}</em></div>
+      <div class="col"><div class="bar">${bar}</div>${slots ? `<div class="axis">${grid}</div>` : ""}${list ? `<div class="list">${list}</div>` : ""}</div></div>`
   }
-  const ticks = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${String(h).padStart(2, "0")}</span>`).join("")
   return `<!doctype html><meta charset="utf-8"><style>
-  *{margin:0;box-sizing:border-box} body{width:1200px;background:#0b1220;font:500 26px/1.2 -apple-system,"Segoe UI",Roboto,sans-serif;color:#e8edf7}
-  .card{padding:44px 48px 40px;background:radial-gradient(1200px 400px at 0 0,#13284a 0,#0b1220 60%)}
-  .head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:34px}
-  h1{font-size:46px;font-weight:800;letter-spacing:-.5px} h1 em{font-style:normal;color:#ffd500}
-  .grp{display:inline-block;margin-top:10px;padding:6px 16px;border-radius:999px;background:#0057b7;font-size:24px;font-weight:700}
-  .upd{color:#8a97ad;font-size:22px;text-align:right}
-  .row{display:flex;align-items:center;gap:24px;margin-bottom:22px}
-  .lbl{width:150px} .lbl div{font-size:28px;font-weight:700} .lbl span{color:#8a97ad;font-size:22px}
-  .bar{position:relative;flex:1;height:78px;display:grid;grid-template-columns:repeat(48,1fr);gap:3px}
-  .bar i{border-radius:5px} .on{background:#ffd500} .off{background:#1d2a40;box-shadow:inset 0 0 0 2px #2c3d5c}
-  .maybe{background:repeating-linear-gradient(135deg,#ffd500 0 8px,#1d2a40 8px 16px)}
-  .bar i:nth-child(2n){margin-right:2px}
-  .none{grid-column:1/-1;display:flex;align-items:center;justify-content:center;border:2px dashed #2c3d5c;border-radius:10px;color:#8a97ad}
-  .now{position:absolute;top:-10px;bottom:-10px;width:4px;background:#fff;border-radius:2px;box-shadow:0 0 0 3px #0b1220}
-  .axis{position:relative;margin:6px 0 0 174px;height:28px;color:#8a97ad;font-size:20px} .axis span{position:absolute;transform:translateX(-50%)}
-  .leg{display:flex;gap:30px;margin-top:26px;color:#aab4c6;font-size:22px} .leg b{display:inline-block;width:22px;height:22px;border-radius:5px;vertical-align:-4px;margin-right:8px}
+  *{margin:0;box-sizing:border-box} body{width:1200px;background:#0b1220;font:600 26px/1.2 -apple-system,"Segoe UI",Roboto,sans-serif;color:#e8edf7}
+  .card{padding:40px 48px 36px;background:#0b1220}
+  .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}
+  h1{font-size:40px;font-weight:800} .grp{margin-left:14px;padding:5px 14px;border-radius:999px;background:#0057b7;font-size:22px;vertical-align:6px}
+  .upd{color:#8a97ad;font-size:20px;text-align:right;font-weight:500}
+  .row{display:flex;align-items:flex-start;gap:24px;margin-bottom:26px} .lbl{width:190px;padding-top:6px} .lbl em{display:block;margin-top:6px;font-style:normal;font-size:20px;color:#8a97ad} .lbl em.red{color:#ff8a8e}
+  .col{flex:1} .lbl div{font-size:30px;font-weight:800} .lbl span{color:#8a97ad;font-size:22px;font-weight:500}
+  .bar{position:relative;flex:1;height:84px;display:flex;gap:4px}
+  .seg{display:flex;align-items:center;justify-content:center;border-radius:10px;font-size:24px;line-height:1.1;font-weight:800;text-align:center;white-space:nowrap;overflow:hidden}
+  .on{background:#30a46c;color:#d9f7e6} .off{background:#e5484d;color:#fff} .maybe{background:repeating-linear-gradient(135deg,#f5a524 0 12px,#c27c0e 12px 24px);color:#1a1200}
+  .none{flex:1;display:flex;align-items:center;justify-content:center;border:2px dashed #2c3d5c;border-radius:10px;color:#8a97ad}
+  .list{display:flex;flex-wrap:wrap;gap:8px 12px;margin-top:10px} .list span{padding:4px 12px;border-radius:8px;font-size:22px;font-weight:700} .offt{background:#3a1416;color:#ff9a9d} .maybet{background:#3a2a0c;color:#ffc35c}
+  .axis{position:relative;margin:8px 0 0;height:24px;color:#8a97ad;font-size:19px;font-weight:500} .axis span{position:absolute;transform:translateX(-50%)}
+  .leg{display:flex;gap:30px;margin-top:20px;color:#aab4c6;font-size:22px} .leg b{display:inline-block;width:24px;height:24px;border-radius:6px;vertical-align:-4px;margin-right:8px}
   </style><div class="card">
-  <div class="head"><div><h1>⚡ ${TITLE} <em>· Ірпінь</em></h1><div class="grp">Черга ${GROUP}</div></div><div class="upd">ДТЕК оновив<br>${updated}</div></div>
-  ${row(rows[0], true)}${row(rows[1], false)}
-  <div class="axis">${ticks}</div>
-  <div class="leg"><span><b class="on"></b>світло є</span><span><b class="off"></b>відключення</span><span><b class="maybe"></b>можливе</span><span><b style="background:#fff;width:6px"></b>зараз</span></div>
+  <div class="head"><h1>⚡ ${TITLE}<span class="grp">черга ${GROUP}</span></h1><div class="upd">ДТЕК оновив<br>${updated}</div></div>
+  ${row(rows[0])}${row(rows[1])}
+  <div class="leg"><span><b class="on"></b>світло є</span><span><b class="off"></b>світла немає</span><span><b class="maybe"></b>можливе відключення</span></div>
   </div>`
 }
 
@@ -245,7 +256,7 @@ async function publish(page, state, res, f, joined) {
 
     const h = res.data?.[HOUSE] || {}
     const alert = h.sub_type ? `⚠️ <b>ДТЕК: ${h.sub_type}</b>${h.start_date ? ` з ${h.start_date}` : ""}${h.end_date ? ` до ${h.end_date}` : ""}` : ""
-    const sig = JSON.stringify([t0, today, tomorrow, alert, GROUP])
+    const sig = JSON.stringify([t0, today, tomorrow, alert, GROUP, CARD_V])
     const body = [
       `⚡️ <b>${TITLE} · черга ${GROUP}</b>`, "",
       dayBlock("Сьогодні", dToday, today), "",
@@ -260,7 +271,7 @@ async function publish(page, state, res, f, joined) {
     const photo = {}
     if (Object.entries(state.subs).some(([id, sub]) => needCard(id, sub))) {
       await page.setViewportSize({ width: 1200, height: 600 })
-      await page.setContent(cardHtml([{ name: "Сьогодні", date: dToday, slots: today }, { name: "Завтра", date: dTom, slots: tomorrow }], nowMin, f.update))
+      await page.setContent(cardHtml([{ name: "Сьогодні", date: dToday, slots: today }, { name: "Завтра", date: dTom, slots: tomorrow }], f.update))
       photo.png = await (await page.$(".card")).screenshot()
       fs.writeFileSync("grafik.png", photo.png)
     }
