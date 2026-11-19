@@ -1,4 +1,4 @@
-// Бот графиків ДТЕК КРЕМ для одного будинку: картинка + живий підпис у закріпі, нагадування за 30 і 10 хв.
+// Бот графиків ДТЕК КРЕМ для одного будинку: картинка + живий підпис у закріпі, нагадування за 10 хв.
 // Сусіди підписуються на бота (/start). Запуск раз на 5 хв (cron-job.org -> GitHub Actions). Стан у state.bin.
 // Збої Telegram і ДТЕК не валять запуск: повтори, а нагадування йдуть з останнього відомого графіка.
 import { chromium } from "playwright"
@@ -178,11 +178,10 @@ export function reminders(all, nowMin, t0) {
     const t = j * 30
     if (t <= nowMin) continue
     let e = j; while (off && e < all.length && all[e] === "off") e++
-    const ths = off ? [[30, true], [10, false]] : [[10, true]]
-    for (const [m, silent] of ths) out.push({ id: `${t0 + j * 1800}:${m}`, at: t - m, t, end: e * 30, off, silent })
+    // тільки за 10 хв: вимкнення зі звуком, увімкнення тихо
+    out.push({ id: `${t0 + j * 1800}:10`, at: t - 10, t, end: e * 30, off, silent: !off })
   }
-  // 30-хвилинне не шлемо, якщо вже час 10-хвилинного
-  return out.filter((r) => !(r.silent && r.off && nowMin >= r.t - 10))
+  return out
 }
 
 // ---------- головне ----------
@@ -283,7 +282,7 @@ async function publish(page, state, res, f, joined) {
       let ok = true
       try {
       if (joined.includes(id)) {
-        await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за 30 і 10 хв до вимкнення.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
+        await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за 10 хв до вимкнення та увімкнення.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
         ok = await sendCard(id, sub, photo, body, false)
       } else if (needCard(id, sub)) ok = await sendCard(id, sub, photo, caption, !!state.head)
       else if (sub.caption !== caption) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML" }))?.gone
@@ -337,7 +336,6 @@ if (process.argv[2] === "test") {
   assert.equal(nowLine(s, null, 100), "💡 <b>Зараз світло є</b> · вимкнення о 10:30")
   const all = [...s, ...Array(48).fill("on")]
   const rs = reminders(all, 600, 0)
-  assert.deepEqual(rs.map((r) => [r.at, r.t, r.end, r.off, r.silent]), [[600, 630, 720, true, true], [620, 630, 720, true, false], [710, 720, 720, false, true], [990, 1020, 1050, true, true], [1010, 1020, 1050, true, false], [1040, 1050, 1050, false, true]])
-  assert.equal(reminders(all, 625, 0)[0].at, 620) // о 10:25 вже лише 10-хвилинне
+  assert.deepEqual(rs.map((r) => [r.at, r.t, r.end, r.off, r.silent]), [[620, 630, 720, true, false], [710, 720, 720, false, true], [1010, 1020, 1050, true, false], [1040, 1050, 1050, false, true]])
   console.log("ok")
 } else await main()
