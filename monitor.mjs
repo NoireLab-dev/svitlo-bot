@@ -10,7 +10,7 @@ const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
-const CARD_V = 2 // зміна дизайну картки -> тихо надіслати нову всім
+const CARD_V = 3 // зміна дизайну картки -> тихо надіслати нову всім
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
@@ -102,29 +102,39 @@ function cardHtml(rows, updated) {
     const iv = all.filter((x) => x.kind === "off")
     const list = all.map((x) => `<span class="${x.kind}t">${hm(x.start)}–${hm(x.end)}${x.kind === "maybe" ? " можливо" : ""}</span>`).join("")
     const sum = !slots ? "" : iv.length ? `без світла ${dur(iv.reduce((a, x) => a + x.end - x.start, 0))}` : "без відключень"
-    return `<div class="row"><div class="lbl"><div>${name}</div><span>${dayLabel(date)}</span><em class="${iv.length ? "red" : ""}">${sum}</em></div>
+    return `<div class="row glass"><div class="lbl"><div>${name}</div><span>${dayLabel(date)}</span><em class="${iv.length ? "red" : ""}">${sum}</em></div>
       <div class="col"><div class="bar">${bar}</div>${slots ? `<div class="axis">${grid}</div>` : ""}${list ? `<div class="list">${list}</div>` : ""}</div></div>`
   }
   return `<!doctype html><meta charset="utf-8"><style>
-  *{margin:0;box-sizing:border-box} body{width:1200px;background:#0b1220;font:600 26px/1.2 -apple-system,"Segoe UI",Roboto,sans-serif;color:#e8edf7}
-  .card{padding:40px 48px 36px;background:#0b1220}
+  *{margin:0;box-sizing:border-box} body{width:1200px;background:#070b18;font:600 26px/1.2 -apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5ff}
+  .card{position:relative;overflow:hidden;padding:44px 48px 40px;background:#070b18}
+  .blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.75}
+  .b1{width:620px;height:620px;left:-160px;top:-260px;background:#1f5bff} .b2{width:520px;height:520px;right:-120px;bottom:-240px;background:#ffcc00;opacity:.45}
+  .b3{width:460px;height:460px;left:420px;top:120px;background:#7b3cff;opacity:.45}
+  .in{position:relative}
+  .glass{background:linear-gradient(135deg,rgba(255,255,255,.14),rgba(255,255,255,.05));border:1px solid rgba(255,255,255,.22);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 20px 50px rgba(0,0,0,.35);backdrop-filter:blur(26px) saturate(150%)}
   .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}
-  h1{font-size:40px;font-weight:800} .grp{margin-left:14px;padding:5px 14px;border-radius:999px;background:#0057b7;font-size:22px;vertical-align:6px}
-  .upd{color:#8a97ad;font-size:20px;text-align:right;font-weight:500}
-  .row{display:flex;align-items:flex-start;gap:24px;margin-bottom:26px} .lbl{width:190px;padding-top:6px} .lbl em{display:block;margin-top:6px;font-style:normal;font-size:20px;color:#8a97ad} .lbl em.red{color:#ff8a8e}
-  .col{flex:1} .lbl div{font-size:30px;font-weight:800} .lbl span{color:#8a97ad;font-size:22px;font-weight:500}
-  .bar{position:relative;flex:1;height:84px;display:flex;gap:4px}
-  .seg{display:flex;align-items:center;justify-content:center;border-radius:10px;font-size:24px;line-height:1.1;font-weight:800;text-align:center;white-space:nowrap;overflow:hidden}
-  .on{background:#30a46c;color:#d9f7e6} .off{background:#e5484d;color:#fff} .maybe{background:repeating-linear-gradient(135deg,#f5a524 0 12px,#c27c0e 12px 24px);color:#1a1200}
-  .none{flex:1;display:flex;align-items:center;justify-content:center;border:2px dashed #2c3d5c;border-radius:10px;color:#8a97ad}
-  .list{display:flex;flex-wrap:wrap;gap:8px 12px;margin-top:10px} .list span{padding:4px 12px;border-radius:8px;font-size:22px;font-weight:700} .offt{background:#3a1416;color:#ff9a9d} .maybet{background:#3a2a0c;color:#ffc35c}
-  .axis{position:relative;margin:8px 0 0;height:24px;color:#8a97ad;font-size:19px;font-weight:500} .axis span{position:absolute;transform:translateX(-50%)}
-  .leg{display:flex;gap:30px;margin-top:20px;color:#aab4c6;font-size:22px} .leg b{display:inline-block;width:24px;height:24px;border-radius:6px;vertical-align:-4px;margin-right:8px}
-  </style><div class="card">
-  <div class="head"><h1>⚡ ${TITLE}<span class="grp">черга ${GROUP}</span></h1><div class="upd">ДТЕК оновив<br>${updated}</div></div>
+  h1{font-size:42px;font-weight:800;letter-spacing:-.5px} .grp{margin-left:14px;padding:6px 16px;border-radius:999px;font-size:22px;vertical-align:7px}
+  .upd{padding:10px 18px;border-radius:16px;color:#c9d3ea;font-size:19px;text-align:right;font-weight:500}
+  .row{display:flex;align-items:flex-start;gap:26px;padding:24px 26px;border-radius:28px;margin-bottom:20px}
+  .lbl{width:170px;padding-top:6px} .lbl div{font-size:30px;font-weight:800} .lbl span{color:#b7c2dc;font-size:22px;font-weight:500}
+  .lbl em{display:block;margin-top:8px;font-style:normal;font-size:20px;color:#b7c2dc} .lbl em.red{color:#ffb3b5}
+  .col{flex:1}
+  .bar{position:relative;height:84px;display:flex;gap:5px}
+  .seg{display:flex;align-items:center;justify-content:center;border-radius:14px;font-size:24px;line-height:1.1;font-weight:800;text-align:center;white-space:nowrap;overflow:hidden;border:1px solid rgba(255,255,255,.28)}
+  .on{background:linear-gradient(180deg,rgba(70,225,145,.78),rgba(25,165,95,.72));color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 8px 22px rgba(40,200,120,.25)}
+  .off{background:linear-gradient(180deg,#ff6b70,#e0313a);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 10px 28px rgba(255,60,70,.55)}
+  .maybe{background:repeating-linear-gradient(135deg,rgba(255,190,60,.9) 0 12px,rgba(200,130,20,.75) 12px 24px);color:#1a1200;box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 10px 26px rgba(255,170,40,.4)}
+  .none{flex:1;display:flex;align-items:center;justify-content:center;border:2px dashed rgba(255,255,255,.25);border-radius:14px;color:#b7c2dc}
+  .axis{position:relative;margin-top:10px;height:24px;color:#aab6d3;font-size:19px;font-weight:500} .axis span{position:absolute;transform:translateX(-50%)}
+  .list{display:flex;flex-wrap:wrap;gap:10px 12px;margin-top:12px} .list span{padding:6px 14px;border-radius:12px;font-size:22px;font-weight:700;border:1px solid rgba(255,255,255,.2);backdrop-filter:blur(10px)}
+  .offt{background:rgba(255,80,90,.38);color:#ffd0d2} .maybet{background:rgba(255,180,50,.2);color:#ffe0a8}
+  .leg{display:flex;gap:30px;margin-top:8px;color:#c9d3ea;font-size:22px} .leg b{display:inline-block;width:24px;height:24px;border-radius:7px;vertical-align:-4px;margin-right:8px;border:1px solid rgba(255,255,255,.3)}
+  </style><div class="card"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i><div class="in">
+  <div class="head"><h1>⚡ ${TITLE}<span class="grp glass">черга ${GROUP}</span></h1><div class="upd glass">ДТЕК оновив<br>${updated}</div></div>
   ${row(rows[0])}${row(rows[1])}
   <div class="leg"><span><b class="on"></b>світло є</span><span><b class="off"></b>світла немає</span><span><b class="maybe"></b>можливе відключення</span></div>
-  </div>`
+  </div></div>`
 }
 
 // ---------- Telegram ----------
