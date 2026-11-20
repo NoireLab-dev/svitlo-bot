@@ -179,12 +179,13 @@ function saveState(s) {
   fs.writeFileSync(STATE_FILE, Buffer.concat([iv, c.getAuthTag(), enc]))
 }
 
-// надіслати картку одному підписнику і закріпити в його чаті
+// надіслати картку одному підписнику, закріпити, а попередню прибрати
 async function sendCard(chatId, sub, photo, caption, loud) {
   const msg = await tg("sendPhoto", { chat_id: chatId, caption, parse_mode: "HTML", disable_notification: !loud }, photo.id || photo.png)
   if (msg.gone) return false
   photo.id ||= msg.photo?.at(-1)?.file_id
-  if (sub.msgId) await tg("unpinChatMessage", { chat_id: chatId, message_id: sub.msgId })
+  // стару картку видаляємо (з нею зникає і копія в групі обговорень); не вийшло (старша 48 год) - хоча б відкріпити
+  if (sub.msgId && !(await tg("deleteMessage", { chat_id: chatId, message_id: sub.msgId }))) await tg("unpinChatMessage", { chat_id: chatId, message_id: sub.msgId })
   await tg("pinChatMessage", { chat_id: chatId, message_id: msg.message_id, disable_notification: true })
   sub.msgId = msg.message_id
   return true
