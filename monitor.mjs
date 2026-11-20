@@ -252,6 +252,9 @@ async function main() {
   }
 }
 
+// попередження ДТЕК («з 15:43 20.11.2026») ще попереду? запізніле, коли відключення вже йде, - не привід для гучного «Увага»
+export const startsAhead = (d, now = Date.now()) => { const m = d?.match(/(\d+):(\d+) (\d+)\.(\d+)\.(\d+)/); return !m || new Date(m[5], m[4] - 1, m[3], m[1], m[2]) > now }
+
 // свіжий графік: картки всім, підпис із «зараз»
 async function publish(page, state, res, f, joined) {
     if (state.staleWarned && OWNER) await tg("sendMessage", { chat_id: OWNER, text: "✅ Графік з ДТЕК знову береться" })
@@ -292,7 +295,7 @@ async function publish(page, state, res, f, joined) {
       const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
       state.head = pGroup !== GROUP ? `🔁 <b>Уточнили чергу: наш будинок живе за чергою ${GROUP}</b>\n\n`
         : p0 !== t0 ? ""
-        : alert && alert !== pAlert ? "⚠️ <b>Увага, відключення!</b>\n\n"
+        : alert && alert !== pAlert && startsAhead(h.start_date) ? "⚠️ <b>Увага, відключення!</b>\n\n"
         : !same(pToday, today) ? "🔄 <b>Графік на сьогодні змінився!</b>\n\n"
         : !pTom && tomorrow ? "📅 <b>З'явився графік на завтра</b>\n\n"
         : !same(pTom, tomorrow) ? "🔄 <b>Графік на завтра змінився</b>\n\n" : ""
@@ -359,5 +362,9 @@ if (process.argv[2] === "test") {
   const all = [...s, ...Array(48).fill("on")]
   const rs = reminders(all, 600, 0)
   assert.deepEqual(rs.map((r) => [r.at, r.t, r.end, r.off, r.silent]), [[620, 630, 720, true, false], [710, 720, 720, false, true], [1010, 1020, 1050, true, false], [1040, 1050, 1050, false, true]])
+  const at = new Date(2026, 10, 20, 16, 8).getTime()
+  assert.equal(startsAhead("15:43 20.11.2026", at), false)
+  assert.equal(startsAhead("18:00 20.11.2026", at), true)
+  assert.equal(startsAhead(undefined, at), true)
   console.log("ok")
 } else await main()
