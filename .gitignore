@@ -3,3 +3,4 @@ node_modules/
 grafik.png
 avatar/
 err.log
+sensor/secrets.h

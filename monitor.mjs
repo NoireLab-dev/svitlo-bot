@@ -4,6 +4,7 @@
 import { chromium } from "playwright"
 import fs from "node:fs"
 import crypto from "node:crypto"
+import { sensorPlan, sensorLine, slotFrom, prune, fresh, D } from "./sensor.mjs"
 
 const { TELEGRAM_BOT_TOKEN: TOKEN, TELEGRAM_CHAT_ID: CHAT, DRY_RUN, STATE_KEY } = process.env
 const CITY = process.env.CITY || "м. Ірпінь"
@@ -14,6 +15,8 @@ const CARD_V = 3 // зміна дизайну картки -> тихо наді�
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
+// знімок датчика з прошивки (змінна репозиторію SENSOR); у публічні логи не друкуємо
+const SENSOR = (() => { try { return JSON.parse(process.env.SENSOR || "null") } catch { return null } })()
 const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
 
 // ---------- дані ----------
@@ -215,7 +218,7 @@ async function main() {
   // нові підписники: /start і /stop з моменту минулого запуску
   const joined = []
   let ups = []
-  try { if (!DRY_RUN) ups = await tg("getUpdates", { offset: (state.offset ?? 0) + 1, allowed_updates: '["message","my_chat_member"]' }) }
+  try { if (!DRY_RUN) ups = await tg("getUpdates", { offset: (state.offset ?? 0) + 1, allowed_updates: '["message","my_chat_member","callback_query"]' }) }
   catch (e) { console.log("getUpdates пропущено:", e.message) } // нові /start заберемо наступного разу
   for (const u of ups || []) {
     state.offset = u.update_id
@@ -226,6 +229,7 @@ async function main() {
       await tg("sendMessage", { chat_id: m.chat.id, text: "Відписав. Щоб повернутись, натисніть /start" }).catch((e) => console.log("stop:", e.message))
     }
     if (cm?.new_chat_member?.status === "kicked") delete state.subs[cm.chat.id]
+    if (OWNER && String((m || u.callback_query)?.from?.id) === String(OWNER)) await ownerCmd(state, m, u.callback_query).catch((e) => console.log("власник:", e.message))
   }
 
   const browser = await chromium.launch({ headless: true, channel: process.env.CHROME_CHANNEL ?? "chrome" })
@@ -244,6 +248,7 @@ async function main() {
       }
     }
     if (f) await publish(page, state, res, f, joined)
+    await sensor(state).catch((e) => console.log("датчик:", e.message))
     await remind(state)
     console.log(`підписників: ${Object.keys(state.subs).length}`)
   } finally {
@@ -277,6 +282,7 @@ async function publish(page, state, res, f, joined) {
       dayBlock("Завтра", dTom, tomorrow), "",
       ...(alert ? [alert] : []),
       nowLine(today, tomorrow, nowMin),
+      ...[sensorLine(SENSOR, state.sensor, Date.now() / 1000)].filter(Boolean),
       `<i>ДТЕК оновив ${f.update}</i>`,
     ].join("\n")
 
@@ -316,8 +322,58 @@ async function publish(page, state, res, f, joined) {
       delete sub.retry
       sub.caption = joined.includes(id) ? body : caption
     }
+    if (state.cache && state.cache.t0 !== t0) state.prevCache = state.cache // датчику для подій біля півночі
     state.cache = { t0, today, tomorrow } // для нагадувань, якщо ДТЕК ляже
     console.log(body)
+}
+
+// ---------- датчик ----------
+const kb = (rows) => rows && JSON.stringify({ inline_keyboard: rows })
+const PAUSE_KB = [[{ text: "⏸ Пауза (їду, вимикаю квартиру)", callback_data: "sp" }]], RESUME_KB = [[{ text: "▶️ Увімкнути датчик", callback_data: "sr" }]]
+
+// власник: «датчик» - стан, «датчик пауза» / «датчик старт», і кнопки під повідомленнями
+async function ownerCmd(state, m, q) {
+  const mem = state.sensor ??= {}, now = Math.floor(Date.now() / 1000)
+  if (q) {
+    const [cmd, s] = q.data.split(":"), ask = mem.asked?.[s]
+    const done = cmd === "sp" ? (mem.pause = { since: now }, "⏸ Датчик на паузі: у канал нічого не пишу")
+      : cmd === "sr" ? (delete mem.pause, "▶️ Датчик знову стежить")
+      : cmd === "oc" && ask ? (ask.ans = "ch", "📢 Пишу в канал")
+      : cmd === "om" && ask ? (ask.ans = "me", mem.pause = { since: now, until: "on" }, "🙋 Зрозумів. Датчик на паузі, поки світло в квартирі не з'явиться") : "Застаріла кнопка"
+    await tg("answerCallbackQuery", { callback_query_id: q.id, text: done }).catch(() => {}) // кнопку могли натиснути давно
+    if (q.message) await tg("editMessageText", { chat_id: q.message.chat.id, message_id: q.message.message_id, text: `${q.message.text}\n\n${done}` })
+    return
+  }
+  const t = (m?.text || "").toLowerCase()
+  if (!/^\/?(датчик|sensor)/.test(t)) return
+  if (/пауз|pause|стоп/.test(t)) mem.pause = { since: now }
+  if (/старт|увімк|resume|start/.test(t)) delete mem.pause
+  const S = SENSOR, line = !fresh(S, now) ? `не на зв'язку${S?.t ? ` з ${new Date(S.t * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })}` : ""}` : S.on ? `світло є, ${Math.round(S.v)} В` : "світла немає"
+  await tg("sendMessage", { chat_id: m.chat.id, text: `🔌 Датчик: ${line}${mem.pause ? `\n⏸ На паузі ${D(now - mem.pause.since)}` : ""}`, reply_markup: kb(mem.pause ? RESUME_KB : PAUSE_KB) })
+}
+
+// події датчика: питання власнику і пости всім підписникам (редагуємо той самий пост, поки подія триває)
+async function sensor(state) {
+  const mem = state.sensor ??= {}, now = Math.floor(Date.now() / 1000)
+  const slotAt = (ts) => slotFrom(state.cache, ts) ?? slotFrom(state.prevCache, ts)
+  const { posts, owner } = sensorPlan(SENSOR, slotAt, mem, now)
+  for (const o of owner) {
+    if (!OWNER) continue
+    const r = await tg("sendMessage", { chat_id: OWNER, text: o.text, reply_markup: kb(o.kb) })
+    if (o.ask) mem.asked[o.ask] = { at: now, id: r.message_id }
+  }
+  for (const p of posts) {
+    const msg = mem.msgs[p.key] ??= { ids: {} }
+    if (msg.text !== p.text) for (const cid of Object.keys(state.subs)) {
+      try {
+        if (msg.ids[cid]) await tg("editMessageText", { chat_id: cid, message_id: msg.ids[cid], text: p.text })
+        else { const r = await tg("sendMessage", { chat_id: cid, text: p.text, disable_notification: !p.loud }); if (!r.gone) msg.ids[cid] = r.message_id }
+      } catch (e) { console.log(`датчик ${cid.slice(-4)}:`, e.message) }
+    }
+    msg.text = p.text
+    if (p.done) mem.done[p.key] = 1
+  }
+  prune(mem, now)
 }
 
 // нагадування з останнього відомого графіка (працює й тоді, коли ДТЕК не відповідає)
@@ -366,5 +422,41 @@ if (process.argv[2] === "test") {
   assert.equal(startsAhead("15:43 20.11.2026", at), false)
   assert.equal(startsAhead("18:00 20.11.2026", at), true)
   assert.equal(startsAhead(undefined, at), true)
+  // датчик: s = вимкнення 10:30-12:00 і 17:00-17:30
+  const { sensorPlan } = await import("./sensor.mjs")
+  const t0 = new Date(2026, 10, 20).getTime() / 1000, tt = (h, m = 0) => t0 + h * 3600 + m * 60
+  const slot = (ts) => slotFrom({ t0, today: s }, ts)
+  const run = (S, mem, now) => sensorPlan({ up: 86400, ...S, t: now }, slot, mem, now)
+  // світло дали із запізненням: спершу «досі немає» гучно, потім той самий пост «дали о 12:40»
+  let mem = {}, r = run({ on: 0, v: 0, p: [[tt(10, 30), 0, 0]] }, mem, tt(12, 15))
+  assert.deepEqual(r.posts.map((p) => [p.key, p.loud, !!p.done]), [[`lon:${tt(12)}`, true, false]])
+  mem.msgs[r.posts[0].key] = { ids: {} }
+  r = run({ on: 1, v: 230, p: [[tt(10, 30), tt(12, 40), 0]] }, mem, tt(12, 45))
+  assert.match(r.posts[0].text, /дали о 12:40, на 40 хв пізніше/)
+  // не вимкнули за графіком
+  r = run({ on: 1, v: 229, p: [] }, {}, tt(17, 15))
+  assert.deepEqual(r.posts.map((p) => p.key), [`lo:${tt(17)}`])
+  // поза графіком: спершу питання власнику, без відповіді за 10 хв - пост у канал; «це я» - тиша і пауза до світла
+  mem = {}; r = run({ on: 0, v: 0, p: [[tt(14), 0, 0]] }, mem, tt(14, 3))
+  assert.equal(r.owner[0].ask, tt(14)); assert.equal(r.posts.length, 0)
+  mem.asked[tt(14)] = { at: tt(14, 3) }
+  assert.equal(run({ on: 0, v: 0, p: [[tt(14), 0, 0]] }, mem, tt(14, 8)).posts.length, 0)
+  assert.deepEqual(run({ on: 0, v: 0, p: [[tt(14), 0, 0]] }, mem, tt(14, 14)).posts.map((p) => p.key), [`o:${tt(14)}`])
+  mem = { asked: { [tt(14)]: { at: tt(14, 3), ans: "me" } }, pause: { since: tt(14, 4), until: "on" } }
+  assert.equal(run({ on: 0, v: 0, p: [[tt(14), 0, 0]] }, mem, tt(14, 30)).posts.length, 0)
+  r = run({ on: 1, v: 231, p: [[tt(14), tt(15), 0]] }, mem, tt(15, 5)); assert.equal(mem.pause, undefined); assert.match(r.owner[0].text, /знову стежить/)
+  // спрацював захист від стрибка, коротке моргання без стрибка - мовчимо
+  r = run({ on: 1, v: 230, p: [[tt(14), tt(14, 0) + 40, 268], [tt(14, 2), tt(14, 2) + 30, 230]] }, {}, tt(14, 5))
+  assert.deepEqual(r.posts.map((p) => p.text), ["⚡️ О 14:00 стрибок напруги до 268 В: спрацював захист, світла не було 40 с (за датчиком)"])
+  // висока напруга: триває -> пост, закінчилась -> підсумок; 30 с у межах 255 - тиша
+  r = run({ on: 1, v: 258, x: [[tt(14), 0, 262]] }, {}, tt(14, 4))
+  assert.equal(r.posts[0].text, "⚡️ Висока напруга: зараз 258 В, триває 4 хв, максимум 262 В (за датчиком)")
+  r = run({ on: 1, v: 230, x: [[tt(14), tt(14, 14), 268], [tt(14, 15), tt(14, 15) + 30, 255]] }, {}, tt(14, 20))
+  assert.deepEqual(r.posts.map((p) => p.text), ["⚡️ Висока напруга 14:00–14:14: трималась 14 хв, максимум 268 В (за датчиком). Зараз норма"])
+  // пауза: нічого не пишемо і не дописуємо потім; датчик мовчить - власнику один раз
+  mem = { pause: { since: tt(9) } }
+  assert.equal(run({ on: 0, v: 0, p: [[tt(14), 0, 0]] }, mem, tt(14, 30)).owner.length, 0)
+  mem = {}; const old = { t: tt(14), on: 1, v: 230 }
+  assert.equal(sensorPlan(old, slot, mem, tt(14, 11)).owner.length, 1); assert.equal(sensorPlan(old, slot, mem, tt(14, 20)).owner.length, 0)
   console.log("ok")
 } else await main()

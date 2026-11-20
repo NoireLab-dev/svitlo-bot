@@ -27,6 +27,7 @@ jobs:
           STATE_KEY: ${{ secrets.STATE_KEY }}
           TELEGRAM_CHAT_ID: "@fortunatraking"
           OWNER_CHAT_ID: ${{ secrets.OWNER_CHAT_ID }}
+          SENSOR: ${{ vars.SENSOR }}
       - name: save state
         if: always()
         run: |
