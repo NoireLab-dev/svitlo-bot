@@ -386,6 +386,12 @@ async function remind(state) {
     const nowMin = now.getHours() * 60 + now.getMinutes() + shift
     const t0 = c.t0
 
+    // момент з нагадування минув (світло дали / вимкнули) - прибираємо його з каналу, пост і так оновлений
+    for (const [cid, sub] of Object.entries(state.subs)) if (sub.remindId && sub.remindAt && Date.now() / 1000 > sub.remindAt + 60) {
+      await tg("deleteMessage", { chat_id: cid, message_id: sub.remindId }).catch(() => {})
+      delete sub.remindId; delete sub.remindAt
+    }
+
     // нагадування: за 30 хв до вимкнення тихо, за 10 хв зі звуком, за 10 хв до увімкнення тихо
     state.sent ??= []
     const all = [...(c.today || []), ...(c.tomorrow || [])]
@@ -402,7 +408,7 @@ async function remind(state) {
         try {
           if (sub.remindId) await tg("deleteMessage", { chat_id: cid, message_id: sub.remindId })
           const m = await tg("sendMessage", { chat_id: cid, text, disable_notification: r.silent })
-          if (m.gone) delete state.subs[cid]; else sub.remindId = m.message_id
+          if (m.gone) delete state.subs[cid]; else { sub.remindId = m.message_id; sub.remindAt = t0 + r.t * 60 }
         } catch (e) { console.log(`нагадування ${cid.slice(-4)}:`, e.message) }
       }
       state.sent = [...state.sent, ...due.filter((d) => d.at <= mNow).map((d) => d.id)].slice(-30)
