@@ -11,7 +11,7 @@ const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
-const CARD_V = 5 // зміна дизайну картки -> тихо надіслати нову всім
+const CARD_V = 6 // зміна дизайну картки -> тихо надіслати нову всім
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
@@ -164,6 +164,7 @@ async function tg(method, params, file) {
   }
   if (!r.ok) console.log(`tg ${method}: ${r.description}`) // текст помилки без chat_id
   if (!r.ok && GONE.test(r.description)) return { gone: true }
+  if (!r.ok && /not modified/.test(r.description)) return { same: true }
   if (!r.ok && !/not modified|not found|can't be/.test(r.description)) throw new Error(`${method}: ${r.description}`)
   return r.result
 }
@@ -323,7 +324,7 @@ async function publish(page, state, res, f, joined) {
         // картку в закріпі оновлюємо на місці: без нових постів і рядків «pinned Deleted message»
         const media = JSON.stringify({ type: "photo", media: photo.id || "attach://photo", caption, parse_mode: "HTML" })
         const m = sub.msgId && !sub.retry && await tg("editMessageMedia", { chat_id: id, message_id: sub.msgId, media }, photo.id ? undefined : photo.png)
-        if (m?.message_id) photo.id ||= m.photo?.at(-1)?.file_id
+        if (m?.message_id || m?.same) photo.id ||= m.photo?.at(-1)?.file_id
         else ok = await sendCard(id, sub, photo, caption, false)
         // звук лише коли змінилось найближче: сьогодні, попередження ДТЕК, черга; завтра - тихо, тільки картка
         if (ok && newCard && /Увага|на сьогодні|Уточнили/.test(state.head)) {
