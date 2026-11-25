@@ -11,7 +11,7 @@ const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
-const CARD_V = 4 // зміна дизайну картки -> тихо надіслати нову всім
+const CARD_V = 5 // зміна дизайну картки -> тихо надіслати нову всім
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
@@ -162,6 +162,7 @@ async function tg(method, params, file) {
     if (!retry || i === 4) break
     await new Promise((ok) => setTimeout(ok, (r.parameters?.retry_after ?? 2 ** i * 3) * 1000))
   }
+  if (!r.ok) console.log(`tg ${method}: ${r.description}`) // текст помилки без chat_id
   if (!r.ok && GONE.test(r.description)) return { gone: true }
   if (!r.ok && !/not modified|not found|can't be/.test(r.description)) throw new Error(`${method}: ${r.description}`)
   return r.result
