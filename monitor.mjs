@@ -11,7 +11,7 @@ const CITY = process.env.CITY || "м. Ірпінь"
 const STREET = process.env.STREET || "вул. Джерельна"
 const GROUP = process.env.GROUP || "6.2"
 const TITLE = process.env.TITLE || "Джерельна 10"
-const CARD_V = 3 // зміна дизайну картки -> тихо надіслати нову всім
+const CARD_V = 4 // зміна дизайну картки -> тихо надіслати нову всім
 const HOUSE = process.env.HOUSE || "10"
 const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
@@ -143,6 +143,9 @@ function cardHtml(rows, updated) {
 // ---------- Telegram ----------
 const GONE = /blocked|deactivated|chat not found|user is deactivated/
 async function tg(method, params, file) {
+  // тиха ніч 23:00-07:00 (TZ Europe/Kyiv): нічого не дзвонить
+  const h = new Date().getHours()
+  if (/^send/.test(method) && (h >= 23 || h < 7)) params = { ...params, disable_notification: true }
   if (DRY_RUN) { console.log("[dry]", method, params.chat_id ?? "", (params.caption || params.text || "").slice(0, 60)); return { message_id: 1 } }
   let body
   if (file && typeof file !== "string") {
@@ -315,7 +318,19 @@ async function publish(page, state, res, f, joined) {
       if (joined.includes(id)) {
         await tg("sendMessage", { chat_id: id, text: `Вітаю! Тепер я надсилатиму графік світла черги ${GROUP} для ${TITLE}: картинку на сьогодні й завтра, зміни графіка і нагадування за 10 хв до вимкнення та увімкнення.\n\nАктуальний графік завжди в закріпі. Відписатися: /stop` })
         ok = await sendCard(id, sub, photo, body, false)
-      } else if (needCard(id, sub)) ok = await sendCard(id, sub, photo, caption, !!state.head)
+      } else if (needCard(id, sub)) {
+        // картку в закріпі оновлюємо на місці: без нових постів і рядків «pinned Deleted message»
+        const media = JSON.stringify({ type: "photo", media: photo.id || "attach://photo", caption, parse_mode: "HTML" })
+        const m = sub.msgId && !sub.retry && await tg("editMessageMedia", { chat_id: id, message_id: sub.msgId, media }, photo.id ? undefined : photo.png)
+        if (m?.message_id) photo.id ||= m.photo?.at(-1)?.file_id
+        else ok = await sendCard(id, sub, photo, caption, false)
+        // звук лише коли змінилось найближче: сьогодні, попередження ДТЕК, черга; завтра - тихо, тільки картка
+        if (ok && newCard && /Увага|на сьогодні|Уточнили/.test(state.head)) {
+          if (sub.alertId) await tg("deleteMessage", { chat_id: id, message_id: sub.alertId })
+          const a = await tg("sendMessage", { chat_id: id, text: `${state.head.trim()}\nАктуальний графік у закріпі 👆`, parse_mode: "HTML" })
+          if (a?.message_id) sub.alertId = a.message_id
+        }
+      }
       else if (sub.caption !== caption) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML" }))?.gone
       } catch (e) { console.log(`підписник ${id.slice(-4)}:`, e.message); sub.retry = true; continue } // дошлемо наступного запуску
       if (!ok) { delete state.subs[id]; continue }
