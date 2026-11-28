@@ -2,17 +2,30 @@
 // Раз на секунду міряє напругу. Пропала напруга (PZEM живиться від мережі і замовкає) = світла немає.
 // Раз на хвилину кладе знімок у змінну репозиторію SENSOR, а на подіях ще й будить бота (workflow_dispatch).
 // Плата і роутер живляться від ДБЖ, тому під час відключення датчик на зв'язку.
+// Оновлення: підняти FW_VER і запустити release.sh - плата сама поставить реліз протягом години, з відкатом.
 // Дроти: PZEM 5V -> 3V3 (рівні 3.3 В, GPIO ESP32 не терплять 5 В), GND -> GND, PZEM TX -> GPIO16, PZEM RX -> GPIO17.
 // Якщо PZEM на 3.3 В не відповідає - живлення на VIN (5 В). Котушка струму не потрібна: міряємо лише напругу.
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include <Preferences.h>
+#include <esp_ota_ops.h>
 #include <PZEM004Tv30.h>
 #include <time.h>
-#include "secrets.h" // WIFI_SSID, WIFI_PASS, GH_TOKEN (не в git, шаблон secrets.example.h)
+// secrets.h (не в git, шаблон secrets.example.h) лише для прошивки по USB: значення один раз пишуться в пам'ять плати (NVS).
+// Збірка для оновлення по повітрю (release.sh, -DOTA_BUILD) секретів не містить: файл лежить у публічному релізі.
+#if __has_include("secrets.h") && !defined(OTA_BUILD)
+#include "secrets.h"
+#endif
 #include "certs.h"
 
+#define FW_VER 3 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
+
 const char* API = "https://api.github.com/repos/NoireLab-dev/svitlo-bot";
+const String REL = "https://github.com/NoireLab-dev/svitlo-bot/releases/latest/download/";
+String tok;
+Preferences cfg;
 const float LO = 207, HI = 253; // 230 В ±10%
 
 PZEM004Tv30 pzem(Serial2, 16, 17);
@@ -31,7 +44,8 @@ bool on = true, inX = false, x60 = false, kick = false, dirty = true;
 int offCnt = 0, onCnt = 0, badCnt = 0, goodCnt = 0;
 float v = 0, recent[5] = {0};
 int ri = 0;
-uint32_t lastOut = 0, lastPatch = 0, lastDispatch = 0, lastOk = 0, lastSample = 0;
+uint32_t lastOut = 0, lastPatch = 0, lastDispatch = 0, lastOk = 0, lastSample = 0, lastFw = 0;
+bool verified = false;
 
 void endX(uint32_t t) {
   Ep& x = xs[nX - 1];
@@ -84,7 +98,7 @@ String eps(Ep* a, int n) {
 
 String snapshot() {
   return String("{\"t\":") + (base + up()) + ",\"up\":" + up() + ",\"on\":" + (on ? 1 : 0) + ",\"v\":" + String(v, 1) +
-         ",\"p\":" + eps(outs, nOut) + ",\"x\":" + eps(xs, nX) + "}";
+         ",\"p\":" + eps(outs, nOut) + ",\"x\":" + eps(xs, nX) + ",\"fw\":" + FW_VER + "}";
 }
 
 int gh(const char* method, const String& path, const String& body) {
@@ -93,7 +107,7 @@ int gh(const char* method, const String& path, const String& body) {
   HTTPClient h;
   h.setTimeout(15000);
   if (!h.begin(c, String(API) + path)) return -1;
-  h.addHeader("Authorization", String("Bearer ") + GH_TOKEN);
+  h.addHeader("Authorization", "Bearer " + tok);
   h.addHeader("Accept", "application/vnd.github+json");
   h.addHeader("User-Agent", "svitlo-sensor");
   h.addHeader("Content-Type", "application/json");
@@ -111,6 +125,8 @@ void report() {
   if (code == 404) code = gh("POST", "/actions/variables", "{\"name\":\"SENSOR\",\"value\":\"" + s + "\"}"); // першого разу змінної ще немає
   if (code < 200 || code >= 300) return;
   lastOk = up(); dirty = false;
+  // нова прошивка дійшла до GitHub = робоча; до цього перезапуск відкотить плату на попередню
+  if (!verified) { verified = true; esp_ota_mark_app_valid_cancel_rollback(); }
   // будимо бота не частіше ніж раз на 90 с: черга GitHub однаково тримає лише один запуск
   if (kick && up() - lastDispatch >= 90) {
     int d = gh("POST", "/actions/workflows/monitor.yml/dispatches", "{\"ref\":\"main\"}");
@@ -119,13 +135,48 @@ void report() {
   Serial.printf("звіт: %s%s\n", snapshot().c_str(), kick ? " (бота розбуджу пізніше)" : "");
 }
 
+// Arduino не підтверджує нову прошивку сам: це робить перший вдалий report()
+bool verifyRollbackLater() { return true; }
+
+// Оновлення по повітрю: раз на годину дивимось останній реліз репозиторію (version.txt + sensor.bin).
+void checkFw() {
+  lastFw = up();
+  WiFiClientSecure c;
+  c.setCACert(ROOT_CA);
+  HTTPClient h;
+  h.setTimeout(15000);
+  h.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  if (!h.begin(c, REL + "version.txt")) return;
+  int code = h.GET();
+  int ver = code == 200 ? h.getString().toInt() : 0;
+  h.end();
+  if (ver <= FW_VER || ver == cfg.getInt("bad", 0)) return;
+  Serial.printf("оновлення: %d -> %d\n", FW_VER, ver);
+  cfg.putInt("try", ver);
+  WiFiClientSecure c2;
+  c2.setCACert(ROOT_CA);
+  httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  if (httpUpdate.update(c2, REL + "sensor.bin") == HTTP_UPDATE_FAILED) Serial.printf("оновлення не вдалось: %s\n", httpUpdate.getLastErrorString().c_str());
+}
+
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  cfg.begin("svitlo");
+#ifdef GH_TOKEN
+  if (cfg.getString("tok") != GH_TOKEN) cfg.putString("tok", GH_TOKEN);
+#endif
+  tok = cfg.getString("tok");
+  // ставили реліз, а працює старіша версія = реліз відкотився; більше його не пробуємо
+  if (cfg.getInt("try", 0) > FW_VER) cfg.putInt("bad", cfg.getInt("try"));
+#ifdef WIFI_SSID
+  WiFi.begin(WIFI_SSID, WIFI_PASS); // запам'ятовується в NVS
+#else
+  WiFi.begin(); // мережа, збережена в NVS при попередній прошивці
+#endif
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  Serial.println("\nдатчик svitlo: старт");
+  Serial.printf("\nдатчик svitlo: старт, прошивка %d\n", FW_VER);
 }
 
 void loop() {
@@ -135,6 +186,8 @@ void loop() {
   if (up() - lastLog >= 5) { lastLog = up(); Serial.printf("V=%.1f світло=%d wifi=%d\n", v, on, WiFi.status() == WL_CONNECTED); }
 
   if (WiFi.status() == WL_CONNECTED && base && (up() - lastPatch >= 60 || ((kick || dirty) && up() - lastPatch >= 10))) report();
+  // оновлення: перша перевірка через 2 хв після старту, далі щогодини, і не посеред події
+  if (WiFi.status() == WL_CONNECTED && verified && !kick && !dirty && !inX && up() >= 120 && (!lastFw || up() - lastFw >= 3600)) checkFw();
   // 30 хв без жодного вдалого звіту - перезапуск (Wi-Fi чи TLS могли зависнути)
   if (up() - lastOk > 1800) ESP.restart();
   delay(20);
