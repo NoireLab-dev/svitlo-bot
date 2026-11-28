@@ -20,7 +20,8 @@ const SENSOR = (() => { try { return JSON.parse(process.env.SENSOR || "null") } 
 // SENSOR_LIVE=1 - пости датчика в канал і рядок у закріпі; інакше тестовий режим: усе лише власнику з позначкою 🧪
 const LIVE = process.env.SENSOR_LIVE === "1"
 // кнопка під карткою: сторінка з живою напругою (web/, Cloudflare Worker)
-const BTN = LIVE ? { reply_markup: JSON.stringify({ inline_keyboard: [[{ text: "⚡️ Напруга зараз і графік", url: "https://svitlo.thelightdeal.workers.dev" }]] }) } : {}
+const BTN_V = LIVE && 2 // піднімати, коли міняється кнопка: картки перепишуться
+const BTN = LIVE ? { reply_markup: JSON.stringify({ inline_keyboard: [[{ text: "⚡️ Напруга зараз і графік", url: "https://svitlo-fortuna.pages.dev" }]] }) } : {}
 const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
 
 // ---------- дані ----------
@@ -337,12 +338,12 @@ async function publish(page, state, res, f, joined) {
           if (a?.message_id) sub.alertId = a.message_id
         }
       }
-      else if (sub.caption !== caption || sub.btn !== LIVE) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML", ...BTN }))?.gone
+      else if (sub.caption !== caption || sub.btn !== BTN_V) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML", ...BTN }))?.gone
       } catch (e) { console.log(`підписник ${id.slice(-4)}:`, e.message); sub.retry = true; continue } // дошлемо наступного запуску
       if (!ok) { delete state.subs[id]; continue }
       delete sub.retry
       sub.caption = joined.includes(id) ? body : caption
-      sub.btn = LIVE
+      sub.btn = BTN_V
     }
     if (state.cache && state.cache.t0 !== t0) state.prevCache = state.cache // датчику для подій біля півночі
     state.cache = { t0, today, tomorrow } // для нагадувань, якщо ДТЕК ляже
