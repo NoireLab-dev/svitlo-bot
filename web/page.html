@@ -66,9 +66,9 @@ function drawNow() {
   const age = Math.max(0, Date.now() / 1000 - S.t), el = $("now")
   if (age > 300) { el.innerHTML = `<div class="state">📡 Датчик не на зв'язку</div><div class="sub">Останні дані о ${tm(S.t)}, ${day(S.t)}. Можливо, у квартирі немає інтернету.</div>`; return }
   if (!S.on) {
-    const o = (S.p || []).find((p) => !p[1]), trip = o && o[2] >= 240
+    const o = (S.p || []).find((p) => !p[1]), low = o && o[2] > 0 && o[2] < LO, trip = o && (o[2] >= 240 || low)
     el.innerHTML = trip
-      ? `<div class="state">⚡️ Спрацював захист від стрибка</div><div class="big" style="font-size:40px">Світла немає</div><div class="sub">З ${tm(o[0])}. Реле поверне світло після 2 хв спокійної мережі. Яка зараз напруга в мережі, датчик не бачить.</div>`
+      ? `<div class="state">${low ? `🔻 Захист: низька напруга, ${o[2]} В` : `⚡️ Захист: стрибок напруги${o[2] > HI ? `, ${o[2]} В` : ""}`}</div><div class="big" style="font-size:40px">Світла немає</div><div class="sub">З ${tm(o[0])}. Реле поверне світло після 2 хв спокійної мережі. Яка зараз напруга в мережі, датчик не бачить.</div>`
       : `<div class="state">⚫️ Світла немає</div><div class="big" style="font-size:40px">${o ? `з ${tm(o[0])}` : "зараз"}</div><div class="sub">${o ? `Вже ${dur(Date.now() / 1000 - o[0])}. ` : ""}Поки світла немає, напругу в мережі не видно.</div>`
     return
   }
@@ -118,7 +118,8 @@ function drawEv() {
   const items = []
   for (const [k, s, e, pk] of H.ev) {
     const d = (e || Date.now() / 1000) - s
-    if (k === "p" && pk >= 240 && e && d < 600) items.push([s, `⚡️ Стрибок напруги, захист вимкнув світло на ${dur(d)}`])
+    if (k === "p" && pk > 0 && pk < LO) items.push([s, `🔻 Низька напруга ${pk} В, захист вимкнув світло${e ? ` на ${dur(d)}` : ""}`])
+    else if (k === "p" && (pk > HI || (pk >= 240 && e && d < 600))) items.push([s, `⚡️ Стрибок напруги${pk > HI ? ` ${pk} В` : ""}, захист вимкнув світло${e ? ` на ${dur(d)}` : ""}`])
     else if (k === "p" && (d >= 120 || !e)) items.push([s, e ? `⚫️ Світла не було до ${tm(e)}, ${dur(d)}` : `⚫️ Світла немає, вже ${dur(d)}`])
     else if (k === "x" && d >= (pk > HI ? 60 : 300)) items.push([s, `${pk > HI ? "📈 Висока" : "🔻 Низька"} напруга ${pk} В, трималась ${dur(d)}`])
   }

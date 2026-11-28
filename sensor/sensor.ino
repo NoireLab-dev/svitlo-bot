@@ -20,7 +20,7 @@
 #endif
 #include "certs.h"
 
-#define FW_VER 5 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
+#define FW_VER 6 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
 
 const char* API = "https://api.github.com/repos/NoireLab-dev/svitlo-bot";
 const String REL = "https://github.com/NoireLab-dev/svitlo-bot/releases/latest/download/";
@@ -69,8 +69,10 @@ void sample() {
 
   // світло: два однакові виміри поспіль, щоб не смикатись від одного збою зв'язку з PZEM
   if (on && !live && ++offCnt >= 2) {
-    float pk = 0;
-    for (float f : recent) pk = max(pk, f); // стрибок за секунди до зникнення = спрацювало реле захисту
+    // стрибок або просадка за секунди до зникнення = спрацювало реле захисту: зберігаємо крайнє значення
+    float mx = 0, mn = 999;
+    for (float f : recent) if (f > 0) { mx = max(mx, f); mn = min(mn, f); }
+    float pk = mx > HI || mn > LO ? mx : mn;
     if (inX) endX(up() - 2);
     on = false; onCnt = 0; kick = dirty = true;
     push(outs, nOut, {up() - 2, 0, (uint16_t)lroundf(pk)});

@@ -66,9 +66,15 @@ export function sensorPlan(S, slotAt, mem, now) {
     const d = (e || now) - s
     // реле ZUBR відрубало квартиру на стрибку: пік перед зникненням або (пік проскочив між замірами) висока напруга і світло повернулось
     // не раніше затримки реле (повторні стрибки продовжують паузу; датчик після ZUBR їх не бачить)
-    const byPeak = pk > NORM[1], byDelay = pk >= ZUBR.hi - 15 && d >= ZUBR.back - 20
-    if (e && d < 600 && (byPeak || byDelay)) {
-      want(`t:${s}`, now - e < 1800, { text: `⚡️ О ${at(s)} стрибок напруги${byPeak ? ` до ${pk} В` : ""}: спрацював захист, світла не було ${D(d)}${d > ZUBR.back + 30 ? " (мережа скакала, реле чекало спокою)" : ""} (за датчиком)`, loud: true, done: true })
+    // просадка: прошивка з fw6 зберігає мінімум перед зникненням; старша - лише епізод низької напруги, що обірвався разом зі світлом
+    const low = (pk > 0 && pk < NORM[0]) || (S.x || []).some(([, xe, xp]) => xp < NORM[0] && xe && Math.abs(xe - s) <= 5)
+    const byPeak = pk > NORM[1] || low, byDelay = pk >= ZUBR.hi - 15 && d >= ZUBR.back - 20
+    if (byPeak || (e && d < 600 && byDelay)) {
+      if (!e && d < 300) continue // реле ще може повернути світло за 2 хв - чекаємо
+      const why = low ? `🔻 О ${at(s)} низька напруга${pk > 0 && pk < NORM[0] ? ` (${pk} В)` : ""}` : `⚡️ О ${at(s)} стрибок напруги${pk > NORM[1] ? ` до ${pk} В` : ""}`
+      want(`t:${s}`, !e || now - e < 1800, e
+        ? { text: `${why}: спрацював захист, світла не було ${D(d)}${d > ZUBR.back + 30 ? " (мережа скакала, реле чекало спокою)" : ""} (за датчиком)`, loud: true, done: true }
+        : { text: `${why}: спрацював захист, світла немає вже ${D(d)}. Реле поверне світло, коли мережа 2 хв буде в нормі (за датчиком)`, loud: true })
       continue
     }
     if (e && d < 120) continue // моргнуло
@@ -144,13 +150,13 @@ export function weekly(mem, now) {
   if (d.getDay() !== 0 || d.getHours() < 20 || mem.lastWeek && now - mem.lastWeek < 5 * 86400) return
   mem.lastWeek = now
   const L = (mem.log || []).filter((l) => now - l[1] < 7 * 86400)
-  const outs = L.filter((l) => l[0] === "p" && l[2] - l[1] >= 120), trips = L.filter((l) => l[0] === "p" && l[2] - l[1] < 600 && l[3] >= ZUBR.hi - 15)
+  const outs = L.filter((l) => l[0] === "p" && l[2] - l[1] >= 120), trips = L.filter((l) => l[0] === "p" && (l[3] > NORM[1] || (l[3] > 0 && l[3] < NORM[0]) || (l[2] - l[1] < 600 && l[3] >= ZUBR.hi - 15)))
   const hi = L.filter((l) => l[0] === "x" && l[3] > NORM[1]), lo = L.filter((l) => l[0] === "x" && l[3] < NORM[0])
   const off = outs.reduce((a, l) => a + l[2] - l[1], 0)
   const lines = [
     "📊 Тиждень за датчиком",
     `⚫️ Світла не було: ${outs.length ? `${times(outs.length)}, разом ${D(off)}` : "жодного разу"}`,
-    `⚡️ Захист від стрибків вимикав квартиру: ${trips.length ? times(trips.length) : "жодного разу"}`,
+    `🛡 Захист (стрибки й просадки) вимикав квартиру: ${trips.length ? times(trips.length) : "жодного разу"}`,
     `📈 Висока напруга (від 254 В): ${hi.length ? times(hi.length) : "не було"}${hi.length ? `, максимум ${Math.max(...hi.map((l) => l[3]))} В` : ""}`,
     `🔻 Низька напруга (до 206 В): ${lo.length ? times(lo.length) : "не було"}${lo.length ? `, мінімум ${Math.min(...lo.map((l) => l[3]))} В` : ""}`,
   ]
