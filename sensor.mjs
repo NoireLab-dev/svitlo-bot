@@ -1,8 +1,9 @@
 // Датчик у квартирі (ESP32 + PZEM-004T у розетці) -> що писати в канал і власнику.
 // Чиста логіка без мережі: на вході знімок датчика, графік і пам'ять бота, на виході пости й питання власнику.
 // Знімок S від прошивки: { t: зараз (unix), up: аптайм с, on: 0|1, v: вольти, p: [[початок, кінець|0, пік перед зникненням]], x: [[початок, кінець|0, пік]] }
-export const NORM = [207, 253] // 230 В ±10%
-const ZUBR = { hi: 255, back: 120 } // реле в щитку (ZUBR D25): вимикає від 255 В, повертає світло через 2 хв
+export const NORM = [207, 253] // 230 В ±10%: тривога з 254 і 206 В (прошивка шле піки цілими)
+const ZUBR = { hi: 255, back: 120 } // реле в щитку (ZUBR D25): вимикає від 255 В, повертає світло через 2 хв спокійної мережі (новий стрибок - відлік спочатку)
+const LOW_MIN = 300, X_GAP = 7200 // низька напруга - пост від 5 хв; нова подія з напругою не раніше ніж за 2 год після попередньої
 const OFF = ["off", "maybe"]
 
 const at = (ts) => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` }
@@ -26,7 +27,8 @@ export function sensorLine(S, mem, now) {
   if (mem?.pause) return "⏸ Датчик у квартирі на паузі"
   if (!fresh(S, now)) return ""
   if (!S.on) { const o = (S.p || []).find(([, e]) => !e); return `🔌 За датчиком світла немає${o ? ` з ${at(o[0])}` : ""}` }
-  return `🔌 За датчиком світло є, ${Math.round(S.v)} В${S.v > NORM[1] || S.v < NORM[0] ? " ⚠️" : ""}`
+  const v = Math.round(S.v)
+  return `🔌 За датчиком світло є · напруга ${v} В${v > NORM[1] || v < NORM[0] ? " ⚠️" : ""} (о ${at(S.t)})`
 }
 
 export function sensorPlan(S, slotAt, mem, now) {
@@ -62,10 +64,11 @@ export function sensorPlan(S, slotAt, mem, now) {
   for (const [s, e, pk] of outs) {
     if (OFF.includes(slotAt(s)) || OFF.includes(slotAt(s + 900))) continue // за графіком (або трохи раніше)
     const d = (e || now) - s
-    // реле ZUBR відрубало квартиру на стрибку: пік перед зникненням або (пік проскочив між замірами) світло повернулось рівно через затримку реле
-    const byPeak = pk > NORM[1], byDelay = pk >= ZUBR.hi - 15 && Math.abs(d - ZUBR.back) <= 20
+    // реле ZUBR відрубало квартиру на стрибку: пік перед зникненням або (пік проскочив між замірами) висока напруга і світло повернулось
+    // не раніше затримки реле (повторні стрибки продовжують паузу; датчик після ZUBR їх не бачить)
+    const byPeak = pk > NORM[1], byDelay = pk >= ZUBR.hi - 15 && d >= ZUBR.back - 20
     if (e && d < 600 && (byPeak || byDelay)) {
-      want(`t:${s}`, now - e < 1800, { text: `⚡️ О ${at(s)} стрибок напруги${byPeak ? ` до ${pk} В` : ""}: спрацював захист, світла не було ${D(d)} (за датчиком)`, loud: true, done: true })
+      want(`t:${s}`, now - e < 1800, { text: `⚡️ О ${at(s)} стрибок напруги${byPeak ? ` до ${pk} В` : ""}: спрацював захист, світла не було ${D(d)}${d > ZUBR.back + 30 ? " (мережа скакала, реле чекало спокою)" : ""} (за датчиком)`, loud: true, done: true })
       continue
     }
     if (e && d < 120) continue // моргнуло
@@ -105,19 +108,58 @@ export function sensorPlan(S, slotAt, mem, now) {
     }
   }
 
-  // 3. напруга поза нормою: пишемо, якщо триває від хвилини або стрибок великий
+  // 3. напруга поза нормою: висока - від хвилини, низька - від 5 хв; короткі - тільки в тижневий підсумок
   for (const [s, e, pk] of S.x || []) {
     const d = (e || now) - s, hi = pk > NORM[1]
-    if (d < 60 && pk < 260 && pk > 190) continue
+    if (d < (hi ? 60 : LOW_MIN)) continue
+    const key = `x:${s}`
+    if (!mem.msgs[key] && !mem.done[key]) { // нова подія: не частіше ніж раз на 2 год
+      if (now - (mem.lastX ?? 0) < X_GAP) { mem.done[key] = 1; continue }
+      if (!paused && (!e || now - e < 1800)) mem.lastX = now
+    }
     const head = hi ? "⚡️ Висока напруга" : "🔻 Низька напруга", peak = `${hi ? "максимум" : "мінімум"} ${pk} В`
-    want(`x:${s}`, !e || now - e < 1800, e ? { text: `${head} ${at(s)}–${at(e)}: трималась ${D(d)}, ${peak} (за датчиком)${S.on ? ". Зараз норма" : ""}`, loud: false, done: true }
+    want(key, !e || now - e < 1800, e ? { text: `${head} ${at(s)}–${at(e)}: трималась ${D(d)}, ${peak} (за датчиком)${S.on ? ". Зараз норма" : ""}`, loud: false, done: true }
       : { text: `${head}: зараз ${Math.round(S.v)} В, триває ${D(d)}, ${peak} (за датчиком)`, loud: hi })
   }
+  log(S, mem, from)
+  const wk = weekly(mem, now)
+  if (wk) posts.push(wk)
   return { posts, owner }
+}
+
+const times = (n) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? "раз" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "рази" : "разів"}`
+
+// журнал завершених подій для тижневого підсумку (і для скарги на напругу)
+function log(S, mem, from) {
+  mem.log ??= []
+  for (const [k, list] of [["p", S.p], ["x", S.x]]) for (const [s, e, pk] of list || []) {
+    if (!e || s < from || mem.log.some((l) => l[0] === k && l[1] === s)) continue
+    mem.log.push([k, s, e, pk])
+  }
+}
+
+// неділя після 20:00 - тихий підсумок за 7 днів, раз на тиждень
+export function weekly(mem, now) {
+  const d = new Date(now * 1000), wkKey = `w:${now - (now % 86400)}`
+  if (d.getDay() !== 0 || d.getHours() < 20 || mem.lastWeek && now - mem.lastWeek < 5 * 86400) return
+  mem.lastWeek = now
+  const L = (mem.log || []).filter((l) => now - l[1] < 7 * 86400)
+  const outs = L.filter((l) => l[0] === "p" && l[2] - l[1] >= 120), trips = L.filter((l) => l[0] === "p" && l[2] - l[1] < 600 && l[3] >= ZUBR.hi - 15)
+  const hi = L.filter((l) => l[0] === "x" && l[3] > NORM[1]), lo = L.filter((l) => l[0] === "x" && l[3] < NORM[0])
+  const off = outs.reduce((a, l) => a + l[2] - l[1], 0)
+  const lines = [
+    "📊 Тиждень за датчиком",
+    `⚫️ Світла не було: ${outs.length ? `${times(outs.length)}, разом ${D(off)}` : "жодного разу"}`,
+    `⚡️ Захист від стрибків вимикав квартиру: ${trips.length ? times(trips.length) : "жодного разу"}`,
+    `📈 Висока напруга (від 254 В): ${hi.length ? times(hi.length) : "не було"}${hi.length ? `, максимум ${Math.max(...hi.map((l) => l[3]))} В` : ""}`,
+    `🔻 Низька напруга (до 206 В): ${lo.length ? times(lo.length) : "не було"}${lo.length ? `, мінімум ${Math.min(...lo.map((l) => l[3]))} В` : ""}`,
+  ]
+  return { key: wkKey, text: lines.join("\n"), loud: false, done: true }
 }
 
 // стара пам'ять (ключі з часом) - геть через 2 доби
 export function prune(mem, now) {
   for (const k of ["done", "msgs"]) for (const key of Object.keys(mem[k] || {})) if (now - Number(key.split(":")[1]) > 2 * 86400) delete mem[k][key]
   for (const s of Object.keys(mem.asked || {})) if (now - Number(s) > 2 * 86400) delete mem.asked[s]
+  if (mem.log) mem.log = mem.log.filter((l) => now - l[1] < 8 * 86400)
 }

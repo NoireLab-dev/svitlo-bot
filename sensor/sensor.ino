@@ -20,13 +20,13 @@
 #endif
 #include "certs.h"
 
-#define FW_VER 4 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
+#define FW_VER 5 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
 
 const char* API = "https://api.github.com/repos/NoireLab-dev/svitlo-bot";
 const String REL = "https://github.com/NoireLab-dev/svitlo-bot/releases/latest/download/";
 String tok;
 Preferences cfg;
-const float LO = 207, HI = 253; // 230 В ±10%
+const float LO = 206.5, HI = 253.5; // 230 В ±10%: 207-253 В норма, тривога з 206 і 254 після округлення
 
 PZEM004Tv30 pzem(Serial2, 16, 17);
 
@@ -73,7 +73,7 @@ void sample() {
     for (float f : recent) pk = max(pk, f); // стрибок за секунди до зникнення = спрацювало реле захисту
     if (inX) endX(up() - 2);
     on = false; onCnt = 0; kick = dirty = true;
-    push(outs, nOut, {up() - 2, 0, (uint16_t)pk});
+    push(outs, nOut, {up() - 2, 0, (uint16_t)lroundf(pk)});
   } else if (live) offCnt = 0;
   if (!on && live && ++onCnt >= 2) {
     on = true; offCnt = 0; kick = dirty = true;
@@ -86,10 +86,10 @@ void sample() {
   bool bad = r > HI || r < LO;
   if (bad) {
     goodCnt = 0; lastOut = up();
-    if (!inX && ++badCnt >= 3) { inX = true; x60 = false; dirty = true; push(xs, nX, {up() - 2, 0, (uint16_t)r}); }
+    if (!inX && ++badCnt >= 3) { inX = true; x60 = false; dirty = true; push(xs, nX, {up() - 2, 0, (uint16_t)lroundf(r)}); }
     if (inX) {
       Ep& x = xs[nX - 1];
-      if (x.pk > HI ? r > x.pk : r < x.pk) x.pk = r;
+      if (x.pk > HI ? r > x.pk : r < x.pk) x.pk = lroundf(r);
       if (!x60 && up() - x.s >= 60) { x60 = true; kick = true; }
     }
   } else {

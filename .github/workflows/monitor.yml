@@ -29,7 +29,8 @@ jobs:
           STATE_KEY: ${{ secrets.STATE_KEY }}
           TELEGRAM_CHAT_ID: "@fortunatraking"
           OWNER_CHAT_ID: ${{ secrets.OWNER_CHAT_ID }}
-          SENSOR: ${{ vars.SENSOR_ON == '1' && vars.SENSOR || '' }} # датчик вмикаємо змінною SENSOR_ON=1, коли стоїть у щитку
+          SENSOR: ${{ vars.SENSOR }}
+          SENSOR_LIVE: ${{ vars.SENSOR_ON }} # 1 - датчик пише в канал; інше - тест, усе тільки власнику
       - name: save state
         if: always()
         run: |

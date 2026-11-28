@@ -17,6 +17,8 @@ const OWNER = process.env.OWNER_CHAT_ID
 const STATE_FILE = "state.bin"
 // знімок датчика з прошивки (змінна репозиторію SENSOR); у публічні логи не друкуємо
 const SENSOR = (() => { try { return JSON.parse(process.env.SENSOR || "null") } catch { return null } })()
+// SENSOR_LIVE=1 - пости датчика в канал і рядок у закріпі; інакше тестовий режим: усе лише власнику з позначкою 🧪
+const LIVE = process.env.SENSOR_LIVE === "1"
 const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
 
 // ---------- дані ----------
@@ -287,7 +289,7 @@ async function publish(page, state, res, f, joined) {
       dayBlock("Завтра", dTom, tomorrow), "",
       ...(alert ? [alert] : []),
       nowLine(today, tomorrow, nowMin),
-      ...[sensorLine(SENSOR, state.sensor, Date.now() / 1000)].filter(Boolean),
+      ...[LIVE && sensorLine(SENSOR, state.sensor, Date.now() / 1000)].filter(Boolean),
       `<i>ДТЕК оновив ${f.update}</i>`,
     ].join("\n")
 
@@ -381,10 +383,11 @@ async function sensor(state) {
   }
   for (const p of posts) {
     const msg = mem.msgs[p.key] ??= { ids: {} }
-    if (msg.text !== p.text) for (const cid of Object.keys(state.subs)) {
+    const text = LIVE ? p.text : `🧪 Тест, у канал не пішло:\n${p.text}`
+    if (msg.text !== p.text) for (const cid of LIVE ? Object.keys(state.subs) : [OWNER].filter(Boolean)) {
       try {
-        if (msg.ids[cid]) await tg("editMessageText", { chat_id: cid, message_id: msg.ids[cid], text: p.text })
-        else { const r = await tg("sendMessage", { chat_id: cid, text: p.text, disable_notification: !p.loud }); if (!r.gone) msg.ids[cid] = r.message_id }
+        if (msg.ids[cid]) await tg("editMessageText", { chat_id: cid, message_id: msg.ids[cid], text })
+        else { const r = await tg("sendMessage", { chat_id: cid, text, disable_notification: !p.loud }); if (!r.gone) msg.ids[cid] = r.message_id }
       } catch (e) { console.log(`датчик ${cid.slice(-4)}:`, e.message) }
     }
     msg.text = p.text
@@ -446,7 +449,7 @@ if (process.argv[2] === "test") {
   assert.equal(startsAhead("18:00 20.11.2026", at), true)
   assert.equal(startsAhead(undefined, at), true)
   // датчик: s = вимкнення 10:30-12:00 і 17:00-17:30
-  const { sensorPlan } = await import("./sensor.mjs")
+  const { sensorPlan, sensorLine } = await import("./sensor.mjs")
   const t0 = new Date(2026, 10, 20).getTime() / 1000, tt = (h, m = 0) => t0 + h * 3600 + m * 60
   const slot = (ts) => slotFrom({ t0, today: s }, ts)
   const run = (S, mem, now) => sensorPlan({ up: 86400, ...S, t: now }, slot, mem, now)
@@ -481,6 +484,24 @@ if (process.argv[2] === "test") {
   assert.equal(r.posts[0].text, "⚡️ Висока напруга: зараз 258 В, триває 4 хв, максимум 262 В (за датчиком)")
   r = run({ on: 1, v: 230, x: [[tt(14), tt(14, 14), 268], [tt(14, 15), tt(14, 15) + 30, 255]] }, {}, tt(14, 20))
   assert.deepEqual(r.posts.map((p) => p.text), ["⚡️ Висока напруга 14:00–14:14: трималась 14 хв, максимум 268 В (за датчиком). Зараз норма"])
+  // повторні стрибки: ZUBR тримав квартиру 4,5 хв (пік 243 між замірами) -> теж захист
+  r = run({ on: 1, v: 230, p: [[tt(14), tt(14, 4) + 30, 243]] }, {}, tt(14, 6))
+  assert.match(r.posts[0].text, /спрацював захист, світла не було 5 хв \(мережа скакала/)
+  // низька: 3 хв - тиша, 6 хв - тихий пост; нова подія за 2 год - не пишемо
+  assert.equal(run({ on: 1, v: 200, x: [[tt(14), 0, 199]] }, {}, tt(14, 3)).posts.length, 0)
+  mem = {}; r = run({ on: 1, v: 200, x: [[tt(14), 0, 198]] }, mem, tt(14, 6))
+  assert.deepEqual(r.posts.map((p) => [p.text, p.loud]), [["🔻 Низька напруга: зараз 200 В, триває 6 хв, мінімум 198 В (за датчиком)", false]])
+  mem.msgs[r.posts[0].key] = { ids: {} }
+  r = run({ on: 1, v: 230, x: [[tt(14), tt(14, 20), 195], [tt(15), 0, 201]] }, mem, tt(15, 10))
+  assert.deepEqual(r.posts.map((p) => p.key), [`x:${tt(14)}`])
+  // рядок у закріпі з часом заміру
+  assert.equal(sensorLine({ t: tt(18, 50), on: 1, v: 241.4 }, {}, tt(18, 52)), "🔌 За датчиком світло є · напруга 241 В (о 18:50)")
+  // тижневий підсумок у неділю ввечері, раз на тиждень (22.11.2026 - неділя)
+  mem = {}; const sun = tt(48 + 20, 1)
+  run({ on: 1, v: 230, p: [[sun - 3600, sun - 3480, 249], [sun - 7200, sun - 5400, 230]], x: [[sun - 9000, sun - 8000, 258]] }, mem, sun - 100)
+  r = run({ on: 1, v: 230 }, mem, sun)
+  assert.match(r.posts.at(-1).text, /Світла не було: 2 рази, разом 32 хв[\s\S]*вимикав квартиру: 1 раз[\s\S]*максимум 258 В/)
+  assert.equal(run({ on: 1, v: 230 }, mem, sun + 600).posts.length, 0)
   // пауза: нічого не пишемо і не дописуємо потім; датчик мовчить - власнику один раз
   mem = { pause: { since: tt(9) } }
   assert.equal(run({ on: 0, v: 0, p: [[tt(14), 0, 0]] }, mem, tt(14, 30)).owner.length, 0)
