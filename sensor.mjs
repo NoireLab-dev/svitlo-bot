@@ -2,6 +2,7 @@
 // Чиста логіка без мережі: на вході знімок датчика, графік і пам'ять бота, на виході пости й питання власнику.
 // Знімок S від прошивки: { t: зараз (unix), up: аптайм с, on: 0|1, v: вольти, p: [[початок, кінець|0, пік перед зникненням]], x: [[початок, кінець|0, пік]] }
 export const NORM = [207, 253] // 230 В ±10%
+const ZUBR = { hi: 255, back: 120 } // реле в щитку (ZUBR D25): вимикає від 255 В, повертає світло через 2 хв
 const OFF = ["off", "maybe"]
 
 const at = (ts) => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` }
@@ -61,8 +62,10 @@ export function sensorPlan(S, slotAt, mem, now) {
   for (const [s, e, pk] of outs) {
     if (OFF.includes(slotAt(s)) || OFF.includes(slotAt(s + 900))) continue // за графіком (або трохи раніше)
     const d = (e || now) - s
-    if (pk > NORM[1] && e && d < 600) { // реле ZUBR відрубало квартиру на стрибку
-      want(`t:${s}`, now - e < 1800, { text: `⚡️ О ${at(s)} стрибок напруги до ${pk} В: спрацював захист, світла не було ${D(d)} (за датчиком)`, loud: true, done: true })
+    // реле ZUBR відрубало квартиру на стрибку: пік перед зникненням або (пік проскочив між замірами) світло повернулось рівно через затримку реле
+    const byPeak = pk > NORM[1], byDelay = pk >= ZUBR.hi - 15 && Math.abs(d - ZUBR.back) <= 20
+    if (e && d < 600 && (byPeak || byDelay)) {
+      want(`t:${s}`, now - e < 1800, { text: `⚡️ О ${at(s)} стрибок напруги${byPeak ? ` до ${pk} В` : ""}: спрацював захист, світла не було ${D(d)} (за датчиком)`, loud: true, done: true })
       continue
     }
     if (e && d < 120) continue // моргнуло
