@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Напруга зараз</title>
+<meta name="description" content="Світло й напруга в будинку зараз, за датчиком у квартирі">
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#14161a;--mute:#6b7280;--line:#e5e7eb;--ok:#16a34a;--okbg:#dcfce7;--hi:#dc2626;--hibg:#fee2e2;--lo:#d97706;--lobg:#fef3c7;--off:#9ca3af;--band:rgba(22,163,74,.09);--accent:#2563eb}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--text:#f2f3f5;--mute:#9aa1ac;--line:#272b33;--ok:#22c55e;--okbg:#0f2a19;--hi:#f87171;--hibg:#3a1414;--lo:#fbbf24;--lobg:#3a2a0b;--off:#4b5260;--band:rgba(34,197,94,.10);--accent:#60a5fa}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:520px;margin:0 auto;padding:16px 16px 32px}
+h1{font-size:15px;font-weight:600;color:var(--mute);margin:4px 2px 12px;letter-spacing:.01em}
+.card{background:var(--card);border-radius:18px;padding:18px;margin-bottom:12px}
+.state{display:flex;align-items:center;gap:8px;font-weight:600;font-size:17px}
+.big{font-size:64px;font-weight:700;letter-spacing:-.03em;line-height:1;margin:14px 0 6px;font-variant-numeric:tabular-nums}
+.big small{font-size:26px;font-weight:600;color:var(--mute);margin-left:4px}
+.chip{display:inline-block;padding:3px 10px;border-radius:99px;font-size:13px;font-weight:600}
+.ok{color:var(--ok);background:var(--okbg)}.hi{color:var(--hi);background:var(--hibg)}.lo{color:var(--lo);background:var(--lobg)}.na{color:var(--mute);background:var(--line)}
+.sub{color:var(--mute);font-size:14px;margin-top:8px}
+.gauge{position:relative;height:8px;border-radius:99px;background:var(--line);margin:18px 0 6px}
+.gauge .band{position:absolute;top:0;bottom:0;background:var(--ok);opacity:.35;border-radius:99px}
+.gauge .dot{position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:var(--text);border:3px solid var(--card);transition:left .6s}
+.scale{position:relative;height:14px;font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums}.scale span{position:absolute;transform:translateX(-50%)}.scale span:first-child{transform:none}.scale span:last-child{transform:translateX(-100%)}
+.tabs{display:flex;gap:4px;background:var(--line);border-radius:10px;padding:3px;margin-bottom:12px}
+.tabs button{flex:1;border:0;background:none;color:var(--mute);font:inherit;font-size:14px;font-weight:600;padding:6px;border-radius:8px;cursor:pointer}
+.tabs button[aria-pressed=true]{background:var(--card);color:var(--text)}
+svg{display:block;width:100%;height:auto;overflow:visible}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.stats div{font-size:12px;color:var(--mute)}.stats b{display:block;font-size:17px;color:var(--text);font-variant-numeric:tabular-nums}
+h2{font-size:15px;margin:0 0 10px}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:14px}
+li:first-child{border-top:0}
+li time{color:var(--mute);min-width:74px;font-variant-numeric:tabular-nums}
+.empty{color:var(--mute);font-size:14px}
+footer{color:var(--mute);font-size:12px;text-align:center;margin-top:16px}
+.skel{opacity:.4}
+</style>
+</head>
+<body>
+<main>
+  <h1>⚡️ Фортуна · світло й напруга</h1>
+  <section class="card" id="now" aria-live="polite"><div class="state skel">Завантажую…</div></section>
+  <section class="card">
+    <div class="tabs" role="group" aria-label="Період"><button id="bDay" aria-pressed="true">24 години</button><button id="bWeek" aria-pressed="false">7 днів</button></div>
+    <div id="chart"><svg viewBox="0 0 340 170"></svg></div>
+    <div class="stats" id="stats"></div>
+  </section>
+  <section class="card"><h2>Події</h2><ul id="ev"><li class="empty">Поки нічого</li></ul></section>
+  <footer>Дані з датчика в квартирі будинку. Норма за законом 207–253 В.<br>Оновлюється сама кожні 15 с</footer>
+</main>
+<script>
+const LO = 207, HI = 253, Y0 = 180, Y1 = 270, $ = (id) => document.getElementById(id)
+const tm = (t) => new Date(t * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" })
+const day = (t) => { const k = (x) => new Date(x * 1000).toLocaleDateString("uk-UA", { timeZone: "Europe/Kyiv" }), n = Date.now() / 1000
+  return k(t) === k(n) ? "сьогодні" : k(t) === k(n - 86400) ? "вчора" : new Date(t * 1000).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", timeZone: "Europe/Kyiv" }) }
+const dur = (s) => { const m = Math.round(s / 60); return s < 60 ? `${Math.round(s)} с` : m < 60 ? `${m} хв` : `${Math.floor(m / 60)} год${m % 60 ? ` ${m % 60} хв` : ""}` }
+const ago = (s) => s < 60 ? "щойно" : `${dur(s)} тому`
+const kind = (v) => v > HI ? ["hi", "Висока"] : v < LO ? ["lo", "Низька"] : ["ok", "Норма"]
+let S, H, mode = "day"
+
+function drawNow() {
+  if (!S) return
+  const age = Math.max(0, Date.now() / 1000 - S.t), el = $("now")
+  if (age > 300) { el.innerHTML = `<div class="state">📡 Датчик не на зв'язку</div><div class="sub">Останні дані о ${tm(S.t)}, ${day(S.t)}. Можливо, у квартирі немає інтернету.</div>`; return }
+  if (!S.on) {
+    const o = (S.p || []).find((p) => !p[1]), trip = o && o[2] >= 240
+    el.innerHTML = trip
+      ? `<div class="state">⚡️ Спрацював захист від стрибка</div><div class="big" style="font-size:40px">Світла немає</div><div class="sub">З ${tm(o[0])}. Реле поверне світло після 2 хв спокійної мережі. Яка зараз напруга в мережі, датчик не бачить.</div>`
+      : `<div class="state">⚫️ Світла немає</div><div class="big" style="font-size:40px">${o ? `з ${tm(o[0])}` : "зараз"}</div><div class="sub">${o ? `Вже ${dur(Date.now() / 1000 - o[0])}. ` : ""}Поки світла немає, напругу в мережі не видно.</div>`
+    return
+  }
+  const [c, word] = kind(S.v), pos = (v) => Math.min(100, Math.max(0, (v - Y0) / (Y1 - Y0) * 100))
+  el.innerHTML = `<div class="state">💡 Світло є <span class="chip ${c}">${word}</span></div>
+    <div class="big">${S.v}<small>В</small></div>
+    <div class="gauge" role="img" aria-label="Напруга ${S.v} В, норма 207–253 В"><div class="band" style="left:${pos(LO)}%;right:${100 - pos(HI)}%"></div><div class="dot" style="left:${pos(S.v)}%"></div></div>
+    <div class="scale">${[Y0, LO, 230, HI, Y1].map((v) => `<span style="left:${pos(v)}%">${v}</span>`).join("")}</div>
+    <div class="sub">Оновлено ${ago(age)}</div>`
+}
+
+function drawChart() {
+  if (!H) return
+  const W = 340, Hh = 150, top = 6, x0 = 28, now = Date.now() / 1000, span = mode === "day" ? 86400 : 7 * 86400, t0 = now - span
+  const X = (t) => x0 + (t - t0) / span * (W - x0), Y = (v) => top + (1 - (Math.min(Y1, Math.max(Y0, v)) - Y0) / (Y1 - Y0)) * (Hh - top)
+  const rows = mode === "day" ? H.day.map(([t, v, o]) => [t, v, v, o]) : H.week, step = mode === "day" ? 60 : 600
+  let g = `<rect x="${x0}" y="${Y(HI)}" width="${W - x0}" height="${Y(LO) - Y(HI)}" fill="var(--band)"/>`
+  for (const v of [190, 207, 230, 253, 270]) g += `<line x1="${x0}" x2="${W}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" stroke-width="${v === 230 ? 0 : 1}"/><text x="${x0 - 4}" y="${Y(v) + 3}" font-size="9" text-anchor="end" fill="var(--mute)">${v}</text>`
+  // світла не було: сірі смуги внизу
+  for (const [t, , , o] of rows) if (!o) g += `<rect x="${X(t)}" y="${Hh - 4}" width="${Math.max(1, step / span * (W - x0))}" height="6" fill="var(--off)"/>`
+  // лінія (тиждень - коридор мін/макс), розрив там, де світла не було або немає даних
+  let line = "", area = [], prev
+  for (const [t, lo, hi, o] of rows) {
+    const ok = o && prev && t - prev <= step * 3
+    if (o) { line += `${ok ? "L" : "M"}${X(t).toFixed(1)} ${Y(hi).toFixed(1)}`; if (mode === "week") area.push([t, lo, hi, ok]) }
+    prev = o ? t : null
+  }
+  if (mode === "week") { let seg = []; const flush = () => { if (seg.length > 1) g += `<path d="M${seg.map(([t, , h]) => `${X(t).toFixed(1)} ${Y(h).toFixed(1)}`).join("L")}L${seg.reverse().map(([t, l]) => `${X(t).toFixed(1)} ${Y(l).toFixed(1)}`).join("L")}Z" fill="var(--accent)" opacity=".25"/>`; seg = [] }
+    for (const a of area) { if (!a[3]) flush(); seg.push(a) } flush() }
+  g += `<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"/>`
+  // піки поза нормою з подій плати
+  for (const [k, s, , pk] of H.ev) if (k === "x" && s > t0) g += `<circle cx="${X(s)}" cy="${Y(pk)}" r="3.5" fill="var(${pk > HI ? "--hi" : "--lo"})"><title>${pk} В о ${tm(s)}</title></circle>`
+  // підписи часу
+  const ticks = mode === "day" ? [0, 6, 12, 18, 24].map((h) => now - 86400 + h * 3600) : [...Array(7)].map((_, i) => now - (6 - i) * 86400)
+  for (const t of ticks) g += `<text x="${Math.min(W - 12, Math.max(x0 + 12, X(t)))}" y="${Hh + 14}" font-size="9" text-anchor="middle" fill="var(--mute)">${mode === "day" ? tm(t) : new Date(t * 1000).toLocaleDateString("uk-UA", { weekday: "short", timeZone: "Europe/Kyiv" })}</text>`
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${Hh + 20}" role="img" aria-label="Графік напруги за ${mode === "day" ? "24 години" : "7 днів"}">${g}</svg>`
+  // підсумок за період
+  const on = rows.filter((r) => r[3]), offMin = (rows.length - on.length) * step / 60
+  const mins = H.ev.filter(([k, s]) => k === "x" && s > t0).map((e) => e[3])
+  const lo = Math.min(...on.map((r) => r[1]), ...mins), hi = Math.max(...on.map((r) => r[2]), ...mins)
+  $("stats").innerHTML = on.length ? `<div>Мінімум<b style="color:var(${lo < LO ? "--lo" : "--text"})">${lo} В</b></div><div>Максимум<b style="color:var(${hi > HI ? "--hi" : "--text"})">${hi} В</b></div><div>Без світла<b>${offMin ? dur(offMin * 60) : "0"}</b></div>`
+    : `<div style="grid-column:span 3">Історія ще збирається: перші точки з'являться за кілька хвилин</div>`
+}
+
+function drawEv() {
+  if (!H) return
+  const items = []
+  for (const [k, s, e, pk] of H.ev) {
+    const d = (e || Date.now() / 1000) - s
+    if (k === "p" && pk >= 240 && e && d < 600) items.push([s, `⚡️ Стрибок напруги, захист вимкнув світло на ${dur(d)}`])
+    else if (k === "p" && (d >= 120 || !e)) items.push([s, e ? `⚫️ Світла не було до ${tm(e)}, ${dur(d)}` : `⚫️ Світла немає, вже ${dur(d)}`])
+    else if (k === "x" && d >= (pk > HI ? 60 : 300)) items.push([s, `${pk > HI ? "📈 Висока" : "🔻 Низька"} напруга ${pk} В, трималась ${dur(d)}`])
+  }
+  $("ev").innerHTML = items.length ? items.slice(0, 15).map(([s, t]) => `<li><time>${day(s)}<br>${tm(s)}</time><span>${t}</span></li>`).join("") : `<li class="empty">За тиждень нічого не сталось</li>`
+}
+
+async function load(url) { const r = await fetch(url, { cache: "no-store" }); if (!r.ok) throw new Error(r.status); return r.json() }
+async function refreshNow() { try { S = await load("/api/now"); drawNow() } catch { if (!S) $("now").innerHTML = `<div class="state">Не вдалося отримати дані</div><div class="sub">Спробую ще раз за 15 с</div>` } }
+async function refreshHist() { try { H = await load("/api/hist"); drawChart(); drawEv() } catch {} }
+for (const [b, m] of [["bDay", "day"], ["bWeek", "week"]]) $(b).onclick = () => { mode = m; $("bDay").setAttribute("aria-pressed", m === "day"); $("bWeek").setAttribute("aria-pressed", m === "week"); drawChart() }
+refreshNow(); refreshHist()
+setInterval(() => { if (!document.hidden) refreshNow() }, 15000)
+setInterval(() => { if (!document.hidden) refreshHist() }, 300000)
+setInterval(drawNow, 5000)
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshNow(); refreshHist() } })
+</script>
+</body>
+</html>

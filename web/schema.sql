@@ -1,0 +1,5 @@
+-- s1: точка щохвилини (25 год), s10: 10 хв мін/макс (8 діб), e: події з плати, c: готова історія для сторінки
+CREATE TABLE IF NOT EXISTS s1 (t INTEGER PRIMARY KEY, v INTEGER, o INTEGER);
+CREATE TABLE IF NOT EXISTS s10 (t INTEGER PRIMARY KEY, lo INTEGER, hi INTEGER, o INTEGER);
+CREATE TABLE IF NOT EXISTS e (k TEXT, s INTEGER, e INTEGER, pk INTEGER, PRIMARY KEY (k, s));
+CREATE TABLE IF NOT EXISTS c (id INTEGER PRIMARY KEY, j TEXT);

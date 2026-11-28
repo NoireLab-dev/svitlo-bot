@@ -1,0 +1,17 @@
+# Сторінка «Напруга зараз» для каналу: Cloudflare Workers + D1, безкоштовний план
+name = "svitlo"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "svitlo"
+database_id = "5f9cf1c0-9dcf-466b-b33e-db3f125ebaa3"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]

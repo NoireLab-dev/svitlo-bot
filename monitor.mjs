@@ -19,6 +19,8 @@ const STATE_FILE = "state.bin"
 const SENSOR = (() => { try { return JSON.parse(process.env.SENSOR || "null") } catch { return null } })()
 // SENSOR_LIVE=1 - пости датчика в канал і рядок у закріпі; інакше тестовий режим: усе лише власнику з позначкою 🧪
 const LIVE = process.env.SENSOR_LIVE === "1"
+// кнопка під карткою: сторінка з живою напругою (web/, Cloudflare Worker)
+const BTN = LIVE ? { reply_markup: JSON.stringify({ inline_keyboard: [[{ text: "⚡️ Напруга зараз і графік", url: "https://svitlo.thelightdeal.workers.dev" }]] }) } : {}
 const DAYS = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"]
 
 // ---------- дані ----------
@@ -191,7 +193,7 @@ function saveState(s) {
 
 // надіслати картку одному підписнику, закріпити, а попередню прибрати
 async function sendCard(chatId, sub, photo, caption, loud) {
-  const msg = await tg("sendPhoto", { chat_id: chatId, caption, parse_mode: "HTML", disable_notification: !loud }, photo.id || photo.png)
+  const msg = await tg("sendPhoto", { chat_id: chatId, caption, parse_mode: "HTML", disable_notification: !loud, ...BTN }, photo.id || photo.png)
   if (msg.gone) return false
   photo.id ||= msg.photo?.at(-1)?.file_id
   // стару картку видаляємо (з нею зникає і копія в групі обговорень); не вийшло (старша 48 год) - хоча б відкріпити
@@ -325,7 +327,7 @@ async function publish(page, state, res, f, joined) {
       } else if (needCard(id, sub)) {
         // картку в закріпі оновлюємо на місці: без нових постів і рядків «pinned Deleted message»
         const media = JSON.stringify({ type: "photo", media: photo.id || "attach://photo", caption, parse_mode: "HTML" })
-        const m = sub.msgId && !sub.retry && await tg("editMessageMedia", { chat_id: id, message_id: sub.msgId, media }, photo.id ? undefined : photo.png)
+        const m = sub.msgId && !sub.retry && await tg("editMessageMedia", { chat_id: id, message_id: sub.msgId, media, ...BTN }, photo.id ? undefined : photo.png)
         if (m?.message_id || m?.same) photo.id ||= m.photo?.at(-1)?.file_id
         else ok = await sendCard(id, sub, photo, caption, false)
         // звук лише коли змінилось найближче: сьогодні, попередження ДТЕК, черга; завтра - тихо, тільки картка
@@ -335,11 +337,12 @@ async function publish(page, state, res, f, joined) {
           if (a?.message_id) sub.alertId = a.message_id
         }
       }
-      else if (sub.caption !== caption) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML" }))?.gone
+      else if (sub.caption !== caption || sub.btn !== LIVE) ok = !(await tg("editMessageCaption", { chat_id: id, message_id: sub.msgId, caption, parse_mode: "HTML", ...BTN }))?.gone
       } catch (e) { console.log(`підписник ${id.slice(-4)}:`, e.message); sub.retry = true; continue } // дошлемо наступного запуску
       if (!ok) { delete state.subs[id]; continue }
       delete sub.retry
       sub.caption = joined.includes(id) ? body : caption
+      sub.btn = LIVE
     }
     if (state.cache && state.cache.t0 !== t0) state.prevCache = state.cache // датчику для подій біля півночі
     state.cache = { t0, today, tomorrow } // для нагадувань, якщо ДТЕК ляже
