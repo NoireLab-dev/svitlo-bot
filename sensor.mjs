@@ -26,7 +26,12 @@ export const fresh = (S, now) => !!S?.t && now - S.t < 600
 export function sensorLine(S, mem, now) {
   if (mem?.pause) return "⏸ Датчик у квартирі на паузі"
   if (!fresh(S, now)) return ""
-  if (!S.on) { const o = (S.p || []).find(([, e]) => !e); return `🔌 За датчиком світла немає${o ? ` з ${at(o[0])}` : ""}` }
+  if (!S.on) {
+    const o = (S.p || []).find(([, e]) => !e)
+    // реле стоїть лише в нашій квартирі: у будинку світло є, але напруга небезпечна
+    if (o && (o[2] > NORM[1] || (o[2] > 0 && o[2] < NORM[0]))) return `🛡 Напруга в мережі поза нормою (${o[2]} В): реле в квартирі з датчиком відключило її о ${at(o[0])}`
+    return `🔌 За датчиком світла немає${o ? ` з ${at(o[0])}` : ""}`
+  }
   const v = Math.round(S.v)
   return `🔌 За датчиком світло є · напруга ${v} В${v > NORM[1] || v < NORM[0] ? " ⚠️" : ""} (о ${at(S.t)})`
 }
@@ -71,10 +76,11 @@ export function sensorPlan(S, slotAt, mem, now) {
     const byPeak = pk > NORM[1] || low, byDelay = pk >= ZUBR.hi - 15 && d >= ZUBR.back - 20
     if (byPeak || (e && d < 600 && byDelay)) {
       if (!e && d < 300) continue // реле ще може повернути світло за 2 хв - чекаємо
-      const why = low ? `🔻 О ${at(s)} низька напруга${pk > 0 && pk < NORM[0] ? ` (${pk} В)` : ""}` : `⚡️ О ${at(s)} стрибок напруги${pk > NORM[1] ? ` до ${pk} В` : ""}`
+      // реле лише в квартирі з датчиком: у сусідів без реле світло було, але з небезпечною напругою
+      const why = low ? `🔻 О ${at(s)} просадка напруги в мережі${pk > 0 && pk < NORM[0] ? ` до ${pk} В` : ""}` : `⚡️ О ${at(s)} стрибок напруги в мережі${pk > NORM[1] ? ` до ${pk} В` : ""}`
       want(`t:${s}`, !e || now - e < 1800, e
-        ? { text: `${why}: спрацював захист, світла не було ${D(d)}${d > ZUBR.back + 30 ? " (мережа скакала, реле чекало спокою)" : ""} (за датчиком)`, loud: true, done: true }
-        : { text: `${why}: спрацював захист, світла немає вже ${D(d)}. Реле поверне світло, коли мережа 2 хв буде в нормі (за датчиком)`, loud: true })
+        ? { text: `${why}. Реле захисту в квартирі з датчиком відключало живлення на ${D(d)}${d > ZUBR.back + 30 ? ", бо мережа скакала" : ""}. Без реле напруги техніка в цей час під ударом (за датчиком)`, loud: true, done: true }
+        : { text: `${why}. Реле захисту в квартирі з датчиком тримає живлення відключеним уже ${D(d)}, тож точної напруги зараз не видно. Без реле напруги краще вимкнути чутливу техніку (за датчиком)`, loud: true })
       continue
     }
     if (e && d < 120) continue // моргнуло
@@ -150,13 +156,14 @@ export function weekly(mem, now) {
   if (d.getDay() !== 0 || d.getHours() < 20 || mem.lastWeek && now - mem.lastWeek < 5 * 86400) return
   mem.lastWeek = now
   const L = (mem.log || []).filter((l) => now - l[1] < 7 * 86400)
-  const outs = L.filter((l) => l[0] === "p" && l[2] - l[1] >= 120), trips = L.filter((l) => l[0] === "p" && (l[3] > NORM[1] || (l[3] > 0 && l[3] < NORM[0]) || (l[2] - l[1] < 600 && l[3] >= ZUBR.hi - 15)))
+  const isTrip = (l) => l[3] > NORM[1] || (l[3] > 0 && l[3] < NORM[0]) || (l[2] - l[1] < 600 && l[3] >= ZUBR.hi - 15)
+  const trips = L.filter((l) => l[0] === "p" && isTrip(l)), outs = L.filter((l) => l[0] === "p" && !isTrip(l) && l[2] - l[1] >= 120)
   const hi = L.filter((l) => l[0] === "x" && l[3] > NORM[1]), lo = L.filter((l) => l[0] === "x" && l[3] < NORM[0])
   const off = outs.reduce((a, l) => a + l[2] - l[1], 0)
   const lines = [
     "📊 Тиждень за датчиком",
     `⚫️ Світла не було: ${outs.length ? `${times(outs.length)}, разом ${D(off)}` : "жодного разу"}`,
-    `🛡 Захист (стрибки й просадки) вимикав квартиру: ${trips.length ? times(trips.length) : "жодного разу"}`,
+    `🛡 Небезпечна напруга, реле відключало квартиру з датчиком: ${trips.length ? times(trips.length) : "жодного разу"}`,
     `📈 Висока напруга (від 254 В): ${hi.length ? times(hi.length) : "не було"}${hi.length ? `, максимум ${Math.max(...hi.map((l) => l[3]))} В` : ""}`,
     `🔻 Низька напруга (до 206 В): ${lo.length ? times(lo.length) : "не було"}${lo.length ? `, мінімум ${Math.min(...lo.map((l) => l[3]))} В` : ""}`,
   ]
