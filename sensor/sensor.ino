@@ -20,7 +20,7 @@
 #endif
 #include "certs.h"
 
-#define FW_VER 3 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
+#define FW_VER 4 // піднімати перед кожним release.sh: плата ставить реліз, лише якщо його номер більший
 
 const char* API = "https://api.github.com/repos/NoireLab-dev/svitlo-bot";
 const String REL = "https://github.com/NoireLab-dev/svitlo-bot/releases/latest/download/";
@@ -53,8 +53,16 @@ void endX(uint32_t t) {
   if (t - x.s >= 60 || x.pk >= 260 || x.pk <= 190) kick = true;
 }
 
+bool sw = false, pz = false; int nanCnt = 0; // sw: RX/TX міняні місцями програмно; pz: PZEM відповідає
+
+void pins() { Serial2.end(); Serial2.begin(9600, SERIAL_8N1, sw ? 17 : 16, sw ? 16 : 17); }
+
 void sample() {
   float r = pzem.voltage();
+  pz = !isnan(r);
+  // PZEM мовчить - пробуємо інший порядок RX/TX, щоб не перетикати дроти руками; робочий запам'ятовуємо
+  if (!pz && ++nanCnt >= 5) { nanCnt = 0; sw = !sw; pins(); }
+  if (pz) { nanCnt = 0; if (cfg.getBool("sw", false) != sw) cfg.putBool("sw", sw); }
   bool live = !isnan(r) && r > 100;
   v = live ? r : 0;
   if (live) recent[ri++ % 5] = r;
@@ -98,7 +106,7 @@ String eps(Ep* a, int n) {
 
 String snapshot() {
   return String("{\"t\":") + (base + up()) + ",\"up\":" + up() + ",\"on\":" + (on ? 1 : 0) + ",\"v\":" + String(v, 1) +
-         ",\"p\":" + eps(outs, nOut) + ",\"x\":" + eps(xs, nX) + ",\"fw\":" + FW_VER + "}";
+         ",\"p\":" + eps(outs, nOut) + ",\"x\":" + eps(xs, nX) + ",\"fw\":" + FW_VER + ",\"pz\":" + (pz ? 1 : 0) + ",\"sw\":" + (sw ? 1 : 0) + "}";
 }
 
 int gh(const char* method, const String& path, const String& body) {
@@ -168,6 +176,8 @@ void setup() {
   if (cfg.getString("tok") != GH_TOKEN) cfg.putString("tok", GH_TOKEN);
 #endif
   tok = cfg.getString("tok");
+  sw = cfg.getBool("sw", false);
+  if (sw) pins();
   // ставили реліз, а працює старіша версія = реліз відкотився; більше його не пробуємо
   if (cfg.getInt("try", 0) > FW_VER) cfg.putInt("bad", cfg.getInt("try"));
 #ifdef WIFI_SSID
